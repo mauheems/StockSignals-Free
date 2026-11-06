@@ -109,4 +109,5 @@ To add a signal, declare it once in `src/analytics/signals.py` and explain it in
 `src/dashboard/metric_guide.py`. It then works in chart overlays, backtest rules and signal
 studies. A test fails if a signal has no explanation.
 
-This software is for research and education, and is not investment advice.
+This software is for research and education, and is not investment advice. Released under the
+[MIT License](LICENSE). The bundled ECharts charting library is under the Apache License 2.0.
