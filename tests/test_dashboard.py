@@ -416,3 +416,32 @@ def test_first_breadth_run_downloads_the_member_list_itself(tmp_path, monkeypatc
     monkeypatch.setattr(refresh, "refresh_breadth_tables", lambda store: "done")
     assert refresh._refresh_breadth(db) == "done"
     assert calls == ["universe", ["AAA"]]
+
+
+def test_missing_markers_from_yahoo_can_be_saved(tmp_path):
+    """ASML's insider table has <NA> for sales, which crashed saving its company data."""
+    import json
+
+    class Ticker:
+        insider_purchases = pd.DataFrame({
+            "Insider Purchases Last 6m": ["Purchases", "Sales", "Net Shares Purchased (Sold)"],
+            "Shares": pd.array([0, pd.NA, 0], dtype="Int64"),
+            "Trans": pd.array([0, 0, pd.NA], dtype="Int64"),
+        })
+
+    insiders = fundamentals._insiders(Ticker())
+    assert insiders["sold_shares"] is None
+    assert insiders["net_shares"] == 0
+    assert insiders["net_pct"] is None
+    json.dumps(insiders)
+    for marker in (pd.NA, pd.NaT, None, float("nan")):
+        assert fundamentals._plain(marker) is None
+    Store(tmp_path / "kv.db").kv_set("fund:TEST", {"insiders": insiders})
+
+
+def test_soxx_is_a_key_signal_outside_market_health(client):
+    body = client.get("/api/overview").json()
+    row = next(item for item in body["signals"] if item["id"] == "soxx")
+    assert row["score"] in (-1, 0, 1)
+    assert REGISTRY["soxx"].pillar is None
+    assert row["page"] == "stock/SOXX"

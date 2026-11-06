@@ -283,6 +283,7 @@ SIGNALS: list[Signal] = [
     Signal("spx_vs_200", "S&P 500 vs 200-day average", "Trend", "spct1", _vs_sma("^GSPC", 200), "trend", higher_better(-1.0, 1.0), higher_is="good", page="breadth", positive_only=False),
     Signal("spx_ma_spread", "50-day vs 200-day average", "Trend", "spct1", _ma_spread("^GSPC"), "trend", higher_better(0.0, 0.0), higher_is="good", page="breadth", positive_only=False),
     Signal("spx_drawdown", "S&P 500 drawdown from 52-week high", "Trend", "spct1", _drawdown("^GSPC"), "trend", higher_better(-10.0, -5.0), higher_is="good", page="breadth", positive_only=False),
+    Signal("soxx", "SOXX semiconductors ETF", "Trend", "usd2", _close("SOXX"), score=above_own_sma(50), higher_is="good", page="stock/SOXX"),
     Signal("ndx_vs_200", "Nasdaq 100 vs 200-day average", "Trend", "spct1", _vs_sma("^NDX", 200), "trend", higher_better(-1.0, 1.0), higher_is="good", page="breadth", positive_only=False),
     Signal("rut_vs_200", "Russell 2000 vs 200-day average", "Trend", "spct1", _vs_sma("^RUT", 200), "trend", higher_better(-1.0, 1.0), higher_is="good", page="breadth", positive_only=False),
 

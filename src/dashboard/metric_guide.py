@@ -122,6 +122,13 @@ METRICS: dict[str, dict] = {
         "Small caps rely more on borrowing and the domestic economy, so their strength is a useful read on risk appetite.",
         "Index level published by FTSE Russell.", YAHOO,
     ),
+    "soxx": _m(
+        "SOXX semiconductors ETF", "trend",
+        "The iShares Semiconductor ETF, a fund holding the largest US-listed chip companies.",
+        "Chips are cyclical and a big part of recent market leadership, so strength here often supports the wider market, and weakness can show up here first.",
+        "Closing price of the fund. The state compares it with its own 50-day average.", YAHOO,
+        score="Shown as Supportive above its 50-day average and Risk below. It is for information only and doesn't count toward Market Health.",
+    ),
     "spx_vs_50": _m(
         "S&P 500 vs 50-day average", "trend",
         "How far the index is above or below its medium-term trend line.",

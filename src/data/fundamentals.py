@@ -39,7 +39,8 @@ def _lock_for(symbol: str) -> threading.Lock:
 
 def _plain(value):
     """Reduce numpy and pandas scalars to JSON-safe Python values."""
-    if value is None:
+    # Yahoo uses pandas' missing markers for fields it lacks, such as foreign firms' insider sales.
+    if value is None or value is pd.NA or value is pd.NaT:
         return None
     if isinstance(value, (pd.Timestamp, dt.datetime, dt.date)):
         return pd.Timestamp(value).strftime("%Y-%m-%d")

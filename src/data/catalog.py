@@ -119,8 +119,11 @@ MACRO_MARKETS = {
     "ETH-USD": "Ether",
 }
 
+# Tracked for the signals table only, so they don't add a near-duplicate to the rotation map.
+KEY_ETFS = {"SOXX": "Semiconductors ETF (SOXX)"}
+
 # Everything refreshed on the fast core schedule, with deep history for research.
-CORE_GROUPS = [INDICES, BROAD_ETFS, SECTORS, FACTORS, THEMES, CROSS_ASSET, VOLATILITY, MACRO_MARKETS]
+CORE_GROUPS = [INDICES, BROAD_ETFS, SECTORS, FACTORS, THEMES, CROSS_ASSET, VOLATILITY, MACRO_MARKETS, KEY_ETFS]
 CORE_HISTORY_START = "2000-01-01"
 BREADTH_HISTORY_START = "2020-01-01"
 

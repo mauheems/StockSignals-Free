@@ -165,7 +165,7 @@ OVERVIEW_TILES = [
 OVERVIEW_SIGNALS = [
     "spx_vs_200", "spx_vs_50", "pct_above_200", "pct_above_50", "mcclellan", "net_highs_10d",
     "vix", "vix_term", "vrp", "spx_net_gex", "sm_gex", "dix", "pc_equity_10d",
-    "hy_oas", "t10y3m", "nfci", "xly_xlp", "iwm_spy", "smh_spy", "fear_greed", "aaii_spread",
+    "hy_oas", "t10y3m", "nfci", "xly_xlp", "iwm_spy", "smh_spy", "soxx", "fear_greed", "aaii_spread",
 ]
 
 

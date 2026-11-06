@@ -244,7 +244,8 @@ function smileChart(data) {
   });
 }
 
-const UNUSUAL_COLUMNS = [
+const unusualColumns = (symbol) => [
+  { key: "underlying", label: "Underlying", left: true, sortable: false, render: () => symbolLink(symbol) },
   { key: "type", label: "Side", left: true, render: (row) => statusBadge("neutral", row.type) },
   { key: "strike", label: "Strike", render: (row) => fmt(row.strike, row.strike % 1 ? "num1" : "num0") },
   { key: "moneyness_pct", label: "From spot", metric: "moneyness", fmt: "spct1" },
@@ -431,9 +432,9 @@ export default {
       }));
       historyCard.setFoot(history.dates.length ? `${history.dates.length} day${history.dates.length === 1 ? "" : "s"} collected so far. Free sources have no history for this, so it builds up while the dashboard runs.` : "");
       replace(unusualBox,
-        h("h3", { class: "card-title", style: { marginBottom: "4px" } }, "Contracts trading far above their open interest", info("unusual_activity")),
-        h("p", { class: "card-sub", style: { marginBottom: "6px" } }, "Sorted by dollars traded. The data doesn't reveal whether these were bought or sold."),
-        dataTable({ columns: UNUSUAL_COLUMNS, rows: data.unusual, maxHeight: 380, empty: "No unusual activity in this scope." }));
+        h("h3", { class: "card-title", style: { marginBottom: "4px" } }, `${data.symbol} options trading far above their open interest`, info("unusual_activity")),
+        h("p", { class: "card-sub", style: { marginBottom: "6px" } }, `${data.name}. Sorted by dollars traded. The data doesn't reveal whether these were bought or sold. Pick another underlying above to see its contracts.`),
+        dataTable({ columns: unusualColumns(data.symbol), rows: data.unusual, maxHeight: 380, empty: "No unusual activity in this scope." }));
     };
 
     function fillScopeOptions() {

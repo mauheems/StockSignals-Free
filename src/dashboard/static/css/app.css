@@ -303,10 +303,16 @@ a.meter-row:hover { background: var(--surface-2); text-decoration: none; }
 .notice { background: var(--surface-2); border-radius: 6px; padding: 6px 8px; font-size: 12px; color: var(--ink-2); margin-bottom: 6px; }
 
 /* ------------------------------------------------------------------ guide */
-.guide-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr)); gap: 10px; align-items: start; }
-.guide-card { scroll-margin-top: 70px; }
-.guide-card.is-target { box-shadow: 0 0 0 2px var(--accent); }
-.guide-card h3 { font-size: 14px; font-weight: 650; margin-bottom: 4px; }
+.guide-wrap { padding: 4px 12px 6px; }
+table.guide-table { table-layout: fixed; }
+table.guide-table th { top: 47px; padding: 7px 10px; }
+table.guide-table td { white-space: normal; vertical-align: top; padding: 8px 10px; font-variant-numeric: normal; line-height: 1.42; }
+table.guide-table tr { scroll-margin-top: 90px; }
+table.guide-table tbody tr.is-target td { background: var(--accent-wash); }
+.guide-name { font-weight: 600; }
+.guide-source { color: var(--ink-2); font-size: 12px; }
+.guide-note { margin-top: 5px; color: var(--ink-2); font-size: 12.5px; }
+.guide-note b { font-weight: 600; }
 
 /* ------------------------------------------------------------------ misc */
 .toasts { position: fixed; right: 16px; bottom: 16px; z-index: 200; display: flex; flex-direction: column; gap: 6px; max-width: 380px; }
@@ -342,6 +348,9 @@ a.meter-row:hover { background: var(--surface-2); text-decoration: none; }
   .topbar { position: static; flex-wrap: wrap; padding: 8px 10px; }
   .search { width: 100%; max-width: none; order: 5; }
   .content { padding: 12px 10px 30px; }
+  .guide-wrap { overflow-x: auto; }
+  table.guide-table { min-width: 760px; }
+  table.guide-table th { top: 0; }
   .cols-4, .cols-5, .cols-6, .cols-7 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (forced-colors: active) {
