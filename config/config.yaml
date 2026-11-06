@@ -1,0 +1,21 @@
+dashboard:
+  port: 8000
+
+# Defaults for the `python main.py backtest` command line.
+market:
+  symbol: SPY
+  start_date: "2018-01-01"
+  end_date: null
+  initial_capital: 10000
+
+backtest:
+  commission_rate: 0.0005
+  slippage_rate: 0.0005
+
+strategy:
+  name: moving_average
+  fast_window: 20
+  slow_window: 50
+
+risk:
+  max_position_fraction: 1.0

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Market Signals</title>
+  <script>
+    // Apply the saved theme before first paint, so pages never flash the wrong colours.
+    (function () {
+      var saved = localStorage.getItem("ms.theme");
+      var prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? "dark" : "light");
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <script src="/static/vendor/echarts.min.js"></script>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/static/js/main.js"></script>
+  <noscript>This dashboard needs JavaScript to draw its charts.</noscript>
+</body>
+</html>
