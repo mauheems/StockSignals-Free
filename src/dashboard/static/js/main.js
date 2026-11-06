@@ -92,7 +92,9 @@ async function route() {
 
 function applyStatus(status) {
   const running = status.running.length;
-  if (status.first_run || (running && status.loaded < status.total)) {
+  // Sources that failed have had their turn: a blocked one must not look like "still loading".
+  const waiting = status.sources.some((source) => !source.last_success && !source.last_error);
+  if (status.first_run || waiting) {
     bannerEl.hidden = false;
     const share = Math.round((status.loaded / status.total) * 100);
     replace(

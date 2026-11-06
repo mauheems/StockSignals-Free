@@ -20,7 +20,8 @@ python main.py
 ```
 
 It opens at <http://localhost:8000>. This repository contains no market data, so the first run
-downloads its own copy, which takes a few minutes. Panels fill in as the data arrives. After that,
+downloads its own copy, which takes a few minutes (older put/call history keeps loading in the
+background for about ten more). Panels fill in as the data arrives. After that,
 data keeps refreshing while the dashboard runs: about every 15 minutes during market hours for
 prices and option chains.
 
