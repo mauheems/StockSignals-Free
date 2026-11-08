@@ -80,11 +80,13 @@ def _refresh_breadth(store: Store) -> str:
 
 
 def _refresh_watchlist(store: Store) -> str:
-    symbols = store.watchlist()
+    watched = store.watchlist()
+    # Stocks with alerts are kept fresh too, even if they aren't on the watchlist.
+    symbols = list(dict.fromkeys([*watched, *store.alert_symbols()]))
     if not symbols:
         return "Watchlist is empty"
     result = refresh_prices(store, symbols, CORE_HISTORY_START, pause=0)
-    for symbol in symbols:
+    for symbol in watched:
         fundamentals.get_fundamentals(store, symbol)
     return f"{result['updated']} of {len(symbols)} symbols"
 
@@ -154,8 +156,8 @@ SOURCES: list[Source] = [
            "Options & Gamma page, gamma levels", _refresh_options, 15 * MINUTE, 6 * HOUR),
     Source("breadth", "S&P 500 member prices", "Yahoo Finance", "About 15 minutes, recomputed every 30 minutes",
            "Trend & Breadth, scanner, RS rating", _refresh_breadth, 30 * MINUTE, 6 * HOUR),
-    Source("watchlist", "Watchlist prices and fundamentals", "Yahoo Finance", "About 15 minutes; fundamentals daily",
-           "Watchlist, stock pages", _refresh_watchlist, 15 * MINUTE, 3 * HOUR),
+    Source("watchlist", "Watchlist and alert prices, fundamentals", "Yahoo Finance", "About 15 minutes; fundamentals daily",
+           "Watchlist, stock pages, alerts", _refresh_watchlist, 15 * MINUTE, 3 * HOUR),
     Source("cboe_ratios", "Market-wide put/call ratios", "Cboe market statistics", "End of day",
            "Flows & Sentiment", _refresh_ratios, 1 * HOUR, 6 * HOUR, _ratios_have_more),
     Source("squeeze", "Dark Index (DIX) and GEX", "SqueezeMetrics", "Published the next morning",
@@ -355,4 +357,5 @@ def status_payload(store: Store, refresher: Refresher | None) -> dict:
         "server_time": time.time(),
         "et_time": now_et().strftime("%H:%M"),
         "db_bytes": store.file_size(),
+        "alerts_unread": store.alert_events_unread(),
     }

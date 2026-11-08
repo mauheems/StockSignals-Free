@@ -215,6 +215,7 @@ export default {
         h("div", { style: { display: "flex", gap: "6px", marginLeft: "auto", flexWrap: "wrap" } },
           watchButton,
           h("a", { class: "btn", href: `#/chart/${encodeURIComponent(data.symbol)}` }, "Open in Chart Lab"),
+          h("a", { class: "btn", href: `#/alerts/new/${encodeURIComponent(data.symbol)}` }, "Add alert"),
           h("a", { class: "btn", href: `#/backtest/${encodeURIComponent(data.symbol)}` }, "Backtest this"))),
       data.chips.length ? chipsBox : null,
       periodCells(s),

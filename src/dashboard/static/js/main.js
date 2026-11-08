@@ -5,6 +5,7 @@ import { debounce, fmtAgo, h, replace } from "./lib/dom.js";
 import { setCatalog } from "./lib/guide.js";
 import { errorBox, loadingBox, toast } from "./lib/ui.js";
 
+import alerts from "./pages/alerts.js";
 import backtest from "./pages/backtest.js";
 import breadth from "./pages/breadth.js";
 import chart from "./pages/chart.js";
@@ -21,14 +22,14 @@ import study from "./pages/study.js";
 import volatility from "./pages/volatility.js";
 import watchlist from "./pages/watchlist.js";
 
-const PAGES = { overview, breadth, rotation, volatility, options, flows, macro, watchlist, scanner, chart, stock, backtest, study, guide, sources };
+const PAGES = { alerts, overview, breadth, rotation, volatility, options, flows, macro, watchlist, scanner, chart, stock, backtest, study, guide, sources };
 
 const NAV = [
   { label: "Market", items: [
     ["overview", "Overview"], ["breadth", "Trend & Breadth"], ["rotation", "Rotation"], ["volatility", "Volatility"],
     ["options", "Options & Gamma"], ["flows", "Flows & Sentiment"], ["macro", "Macro & Credit"],
   ] },
-  { label: "Stocks", items: [["watchlist", "Watchlist"], ["scanner", "S&P 500 Scanner"], ["chart", "Chart Lab"]] },
+  { label: "Stocks", items: [["watchlist", "Watchlist"], ["alerts", "Alerts"], ["scanner", "S&P 500 Scanner"], ["chart", "Chart Lab"]] },
   { label: "Research", items: [["backtest", "Backtests"], ["study", "Signal Study"]] },
   { label: "Reference", items: [["guide", "Metric Guide"], ["sources", "Data Sources"]] },
 ];
@@ -44,6 +45,11 @@ bannerEl.hidden = true;
 const statusDot = h("span", { class: "status-dot" });
 const statusText = h("span", {}, "Connecting…");
 const freshnessText = h("span", { class: "sub-text" });
+const alertLink = h("a", { class: "btn btn-xs", href: "#/alerts", id: "alert-link", title: "Your alerts and notifications" }, "Alerts");
+
+function showUnread(count) {
+  replace(alertLink, "Alerts", count ? h("span", { class: "alert-count", "aria-label": `${count} new notifications` }, String(count)) : null);
+}
 const navLinks = new Map();
 
 function currentRoute() {
@@ -118,6 +124,7 @@ function applyStatus(status) {
     }
   }
   lastVersion = status.version;
+  showUnread(status.alerts_unread || 0);
   document.dispatchEvent(new CustomEvent("status", { detail: status }));
 }
 
@@ -278,6 +285,7 @@ function buildShell() {
     h("div", { class: "topbar-spacer" }),
     h("span", { class: "status-pill", id: "market-status" }, statusDot, statusText),
     freshnessText,
+    alertLink,
     buildRefresh(),
     buildTheme());
   replace(document.getElementById("app"), h("div", { class: "shell" }, sidebar, h("div", { class: "main" }, topbar, bannerEl, contentEl)));
@@ -292,6 +300,7 @@ async function boot() {
     return;
   }
   window.addEventListener("hashchange", route);
+  document.addEventListener("alerts-changed", pollStatusOnce);
   await route();
   pollStatus();
 }

@@ -23,6 +23,7 @@ GUIDE_CATEGORIES = [
     {"id": "stock", "label": "Company fundamentals"},
     {"id": "research", "label": "Backtests & studies"},
     {"id": "calendar", "label": "Calendar"},
+    {"id": "alerts", "label": "Alerts"},
 ]
 
 YAHOO = "Yahoo Finance, about 15 minutes delayed for US stocks and ETFs"
@@ -1230,6 +1231,30 @@ METRICS: dict[str, dict] = {
         "One of the biggest scheduled market movers. Compare it to expectations, not just to last month.",
         "Bureau of Labor Statistics release dates via FRED.",
         "FRED release calendar, checked daily",
+    ),
+
+    # ------------------------------------------------------------------------ alerts
+    "alerts": _m(
+        "Alerts", "alerts",
+        "Your own notifications: watch a market signal or a stock, and get a note when it reaches a level you choose.",
+        "Notifications appear on the Alerts page, in the top bar and on the Overview. They are checked every time new data arrives, so they're as delayed as the data itself: about 15 minutes for prices during market hours, longer for daily or weekly data. They only work while the dashboard is running.",
+        "Each check takes the latest reading and the one before it, and compares them with your level.",
+        "Calculated here from the same data as the rest of the dashboard",
+        "During market hours the latest reading is today's bar, which is still moving, so a crossing can appear and then undo itself later in the day.",
+    ),
+    "alert_conditions": _m(
+        "Alert conditions", "alerts",
+        "When an alert fires: 'is above' and 'is below' describe a state, 'crosses above' and 'crosses below' describe a move.",
+        "'Is above' fires once when the value gets above your level, then waits until it has dropped back below before it can fire again. 'Crosses above' fires on the day the value moves from at or below your level to above it, at most once per day. Use 'is' to be told about a situation, and 'crosses' to be told about a change.",
+        "Is above: latest > level. Crosses above: previous reading <= level and latest > level. 'Below' versions mirror these.",
+        "Calculated here",
+    ),
+    "price": _m(
+        "Price", "stock",
+        "The latest price of a stock or fund.",
+        "Useful for levels you care about yourself, such as an entry price, a stop or a recent high.",
+        "Latest close, or the latest delayed price during the trading day.",
+        YAHOO,
     ),
 
     # ---------------------------------------------------------------- chart overlays

@@ -56,6 +56,7 @@ I've only run it on Linux so far. Mac and Windows should work, but they're untes
 | Page | What it's for |
 |---|---|
 | **Watchlist** | Add any ticker and see all its signals side by side |
+| **Alerts** | Get a notification when a stock or a market signal crosses a level you pick, for example "NVDA below $180" or "VIX above 30". You'll see it in the app; there are no emails or texts (yet) |
 | **S&P 500 Scanner** | Rank and filter every member to find new names |
 | **Chart Lab** | Candles, moving averages and indicators, with any market signal layered over the price |
 

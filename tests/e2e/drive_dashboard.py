@@ -27,13 +27,13 @@ BASE = os.environ.get("DASHBOARD_URL", "http://localhost:8765")
 SHOTS = os.environ.get("DASHBOARD_SHOTS")
 PAGES = [
     "overview", "breadth", "rotation", "volatility", "options", "flows", "macro",
-    "watchlist", "scanner", "chart", "backtest", "study", "guide", "sources",
+    "watchlist", "alerts", "scanner", "chart", "backtest", "study", "guide", "sources",
 ]
 ROUTES = set(PAGES) | {"stock"}
 BAD_TEXT = re.compile(r"\b(undefined|NaN|null|\[object Object\]|Infinity)\b")
 LONG_DECIMAL = re.compile(r"\d\.\d{7,}")
 # Buttons that change saved state are exercised by their own scenarios, not the sweep.
-SKIP_SELECTOR = "[data-remove], [data-watch], #watch-toggle, #refresh-all, #theme-toggle, [data-source], .search-item"
+SKIP_SELECTOR = "[data-remove], [data-watch], [data-danger], #watch-toggle, #refresh-all, #theme-toggle, #create-alert, [data-source], .search-item"
 
 
 class Run:
@@ -691,6 +691,73 @@ def scenario_guide(run: Run) -> None:
     run.ok()
 
 
+def scenario_alerts(run: Run) -> None:
+    """Create, fire, pause and delete alerts. Leaves the user's own alerts untouched."""
+    run.visit("alerts")
+    page = run.page
+    before = json.loads(page.evaluate("() => fetch('/api/alerts').then((r) => r.text())"))
+    existing = {alert["id"] for alert in before["alerts"]}
+    # A stock alert whose condition is already true fires straight away.
+    page.locator("#alert-symbol").fill("SPY")
+    page.locator("#alert-measure").select_option("close")
+    page.locator("#alert-op").select_option("above")
+    page.locator("#alert-value").fill("1")
+    run.idle()
+    if "Now $" not in page.locator(".rule-hint").inner_text():
+        run.problem("alert form shows no current value")
+    run.click("#create-alert", "create a stock alert")
+    run.settle()
+    if "SPY price is above $1.00" not in page.locator("#content").inner_text():
+        run.problem("the new alert did not fire although its condition is met")
+    if not page.locator("#alert-link .alert-count").count():
+        page.wait_for_timeout(1500)
+        if not page.locator("#alert-link .alert-count").count():
+            run.problem("top bar shows no unread count")
+    # A market-signal alert from an example.
+    run.click(page.locator("button.chip", has_text="VIX above 30"), "use an example")
+    run.click("#create-alert", "create a signal alert")
+    run.settle()
+    run.check_page("with alerts")
+    # Missing level is refused with a message.
+    page.locator("#alert-value").fill("")
+    page.locator("#alert-value").dispatch_event("input")
+    run.click("#create-alert", "create without a level")
+    page.wait_for_selector(".toast.error")
+    run.expected_status = 404
+    run.choose("What to watch", "A stock")
+    page.locator("#alert-symbol").fill("NOSUCHTICKER")
+    page.locator("#alert-value").fill("5")
+    page.locator("#alert-value").dispatch_event("input")
+    run.click("#create-alert", "create for an unknown ticker")
+    page.wait_for_selector(".toast.error:has-text('NOSUCHTICKER')", timeout=60000)
+    run.expected_status = None
+    after = json.loads(page.evaluate("() => fetch('/api/alerts').then((r) => r.text())"))
+    created = [alert["id"] for alert in after["alerts"] if alert["id"] not in existing]
+    if len(created) != 2:
+        run.problem(f"expected 2 new alerts, found {len(created)}")
+    # Overview shows the notification.
+    run.visit("overview")
+    if "SPY price is above $1.00" not in page.locator("#content").inner_text():
+        run.problem("Overview does not show the alert notification")
+    run.visit("alerts")
+    # Pause and resume one, then delete what this test created.
+    toggle = page.locator(f"tr:has([data-alert='{created[0]}']) input[type=checkbox]")
+    run.click(toggle, "pause an alert")
+    run.settle()
+    if "Paused" not in page.locator("#content").inner_text():
+        run.problem("pausing an alert did not show it as paused")
+    run.click(page.locator(f"tr:has([data-alert='{created[0]}']) input[type=checkbox]"), "resume an alert")
+    run.settle()
+    for alert_id in created:
+        run.click(page.locator(f"[data-alert='{alert_id}']"), "delete an alert")
+        run.settle()
+    if not before["events"]:
+        page.evaluate("() => fetch('/api/alerts/events', { method: 'DELETE' })")
+    final = json.loads(page.evaluate("() => fetch('/api/alerts').then((r) => r.text())"))
+    if {alert["id"] for alert in final["alerts"]} != existing:
+        run.problem("alerts were not restored after the test")
+
+
 def scenario_sources(run: Run) -> None:
     run.visit("sources")
     page = run.page
@@ -738,7 +805,7 @@ def main() -> int:
         scenarios = [
             scenario_shell, scenario_overview, scenario_rotation, scenario_options, scenario_watchlist,
             scenario_scanner, scenario_stock, scenario_chart, scenario_backtest, scenario_study,
-            scenario_guide, scenario_sources,
+            scenario_guide, scenario_alerts, scenario_sources,
         ]
         for scenario in scenarios:
             name = scenario.__name__.removeprefix("scenario_")

@@ -15,7 +15,8 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from src.analytics.signals import Ctx
+from src.analytics import alerts as alert_logic
+from src.analytics.signals import SELF_SIGNALS, Ctx
 from src.dashboard import payloads
 from src.dashboard.metric_guide import GUIDE_CATEGORIES, METRICS
 from src.data import cboe, fundamentals, macro_sources, refresh
@@ -65,6 +66,28 @@ class Services:
         self.side_jobs = ThreadPoolExecutor(max_workers=2, thread_name_prefix="side-job")
         self._ctx: Ctx | None = None
         self._ctx_lock = threading.Lock()
+        self._alert_stop = threading.Event()
+        self._alert_thread: threading.Thread | None = None
+
+    def start_alert_checks(self) -> None:
+        """Check alerts whenever new data has arrived."""
+
+        def loop() -> None:
+            checked_version = None
+            while not self._alert_stop.is_set():
+                if self.store.version != checked_version:
+                    checked_version = self.store.version
+                    try:
+                        alert_logic.evaluate_all(self.store, self.ctx())
+                    except Exception:
+                        logger.exception("Checking alerts failed")
+                self._alert_stop.wait(10)
+
+        self._alert_thread = threading.Thread(target=loop, name="alert-checks", daemon=True)
+        self._alert_thread.start()
+
+    def stop_alert_checks(self) -> None:
+        self._alert_stop.set()
 
     def ctx(self) -> Ctx:
         with self._ctx_lock:
@@ -106,7 +129,9 @@ def create_app(store: Store | None = None, *, background: bool = True) -> FastAP
     async def lifespan(_: FastAPI):
         if services.refresher:
             services.refresher.start()
+            services.start_alert_checks()
         yield
+        services.stop_alert_checks()
         if services.refresher:
             services.refresher.stop()
         services.side_jobs.shutdown(wait=False, cancel_futures=True)
@@ -238,6 +263,63 @@ def create_app(store: Store | None = None, *, background: bool = True) -> FastAP
         store.watchlist_remove(target)
         store.bump_version()
         return {"symbol": target, "watchlist": store.watchlist()}
+
+    # ----------------------------------------------------------------------- alerts
+    @app.get("/api/alerts")
+    def alerts():
+        ctx = services.ctx()
+        return {
+            "alerts": [alert_logic.alert_view(alert, store, ctx) for alert in store.alerts()],
+            "events": store.alert_events(),
+            "unread": store.alert_events_unread(),
+            "operators": [{"value": key, "label": label} for key, label in alert_logic.OPERATORS.items()],
+            "stock_measures": [
+                {"value": key, "label": SELF_SIGNALS[key]["label"], "metric": SELF_SIGNALS[key]["metric"], "fmt": fmt}
+                for key, fmt in alert_logic.STOCK_FORMATS.items()
+            ],
+        }
+
+    @app.post("/api/alerts")
+    def alert_create(body: dict = Body(...)):
+        if len(store.alerts()) >= alert_logic.MAX_ALERTS:
+            raise HTTPException(status_code=400, detail=f"You can have up to {alert_logic.MAX_ALERTS} alerts. Delete one first.")
+        rule = alert_logic.parse_rule(body, store, lambda db, symbol: ensure_prices(db, symbol))
+        alert_id = store.alert_add(rule)
+        ctx = services.ctx()
+        alert_logic.evaluate_new(store, ctx, alert_id)
+        return alert_logic.alert_view(store.alert(alert_id), store, ctx)
+
+    @app.post("/api/alerts/preview")
+    def alert_preview(body: dict = Body(...)):
+        # Called while the user types, so it only reads stored data and never downloads:
+        # half-typed tickers must not be fetched or saved.
+        rule = alert_logic.parse_rule(body, store, lambda db, symbol: None)
+        view = alert_logic.alert_view({"id": 0, "rule": rule, "enabled": 1, "created_at": None, "last_triggered": None}, store, services.ctx())
+        return {"label": view["label"], "fmt": view["fmt"], "status": view["status"]}
+
+    @app.post("/api/alerts/read")
+    def alerts_mark_read():
+        store.alert_events_mark_read()
+        return {"unread": 0}
+
+    @app.delete("/api/alerts/events")
+    def alerts_clear():
+        store.alert_events_clear()
+        return {"unread": 0}
+
+    @app.patch("/api/alerts/{alert_id}")
+    def alert_toggle(alert_id: int, body: dict = Body(...)):
+        if not store.alert_set_enabled(alert_id, bool(body.get("enabled"))):
+            raise HTTPException(status_code=404, detail="That alert no longer exists.")
+        if body.get("enabled"):
+            alert_logic.evaluate_new(store, services.ctx(), alert_id)
+        return alert_logic.alert_view(store.alert(alert_id), store, services.ctx())
+
+    @app.delete("/api/alerts/{alert_id}")
+    def alert_remove(alert_id: int):
+        if not store.alert_delete(alert_id):
+            raise HTTPException(status_code=404, detail="That alert no longer exists.")
+        return {"deleted": alert_id}
 
     @app.get("/api/scanner")
     def scanner():

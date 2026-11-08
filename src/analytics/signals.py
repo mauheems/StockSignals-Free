@@ -374,6 +374,8 @@ SIGNAL_GROUPS = ["Composite", "Trend", "Breadth", "Volatility", "Options & flows
 
 # Technical readings of whichever symbol is being tested; rules refer to them as "self:<id>".
 SELF_SIGNALS: dict[str, dict] = {
+    "close": {"label": "Price", "metric": "price"},
+    "ret_1": {"label": "1-day change (%)", "metric": "period_returns"},
     "close_vs_sma20": {"label": "Price vs its 20-day average (%)", "metric": "vs_sma"},
     "close_vs_sma50": {"label": "Price vs its 50-day average (%)", "metric": "vs_sma"},
     "close_vs_sma200": {"label": "Price vs its 200-day average (%)", "metric": "vs_sma"},
@@ -395,6 +397,8 @@ SELF_SIGNALS: dict[str, dict] = {
 def self_signal(signal_id: str, frame: pd.DataFrame) -> pd.Series:
     """Compute one technical reading on a symbol's own OHLCV data."""
     close = frame["Close"]
+    if signal_id == "close":
+        return close
     if signal_id.startswith("close_vs_sma"):
         window = int(signal_id.removeprefix("close_vs_sma"))
         return (close / ta.sma(close, window) - 1.0) * 100.0

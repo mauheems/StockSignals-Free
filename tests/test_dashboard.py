@@ -445,3 +445,112 @@ def test_soxx_is_a_key_signal_outside_market_health(client):
     assert row["score"] in (-1, 0, 1)
     assert REGISTRY["soxx"].pillar is None
     assert row["page"] == "stock/SOXX"
+
+
+# --------------------------------------------------------------------------- alerts
+
+def _alert(db, rule):
+    from src.analytics import alerts as logic
+
+    alert_id = db.alert_add(rule)
+    return alert_id, logic
+
+
+def _series_frame(values):
+    index = pd.bdate_range("2026-01-05", periods=len(values))
+    close = pd.Series(values, index=index, dtype=float)
+    return pd.DataFrame({"Open": close, "High": close, "Low": close, "Close": close, "AdjClose": close, "Volume": 1.0})
+
+
+def test_is_above_alert_fires_once_and_rearms_after_dropping_back(tmp_path):
+    db = Store(tmp_path / "alerts.db")
+    alert_id, logic = _alert(db, {"kind": "stock", "symbol": "ABC", "metric": "close", "op": "above", "value": 100.0, "note": ""})
+    ctx = Ctx(db)
+    for prices, expected_events in ([90, 95], 0), ([90, 95, 105], 1), ([90, 95, 105, 106], 1), ([90, 95, 105, 106, 99], 1), ([90, 95, 105, 106, 99, 101], 2):
+        db.replace_prices("ABC", _series_frame(prices))
+        logic.evaluate_all(db, ctx)
+        assert len(db.alert_events()) == expected_events, prices
+    assert db.alert_events()[0]["message"] == "ABC price is above $100.00 (now $101.00)"
+    assert db.alert(alert_id)["last_triggered"] is not None
+
+
+def test_cross_alert_fires_once_per_crossing_day(tmp_path):
+    db = Store(tmp_path / "alerts.db")
+    _, logic = _alert(db, {"kind": "stock", "symbol": "ABC", "metric": "close", "op": "crosses_below", "value": 100.0, "note": ""})
+    ctx = Ctx(db)
+    db.replace_prices("ABC", _series_frame([110, 105, 99]))
+    logic.evaluate_all(db, ctx)
+    logic.evaluate_all(db, ctx)
+    assert len(db.alert_events()) == 1
+    assert "crossed below" in db.alert_events()[0]["message"]
+    db.replace_prices("ABC", _series_frame([110, 105, 99, 98]))
+    logic.evaluate_all(db, ctx)
+    assert len(db.alert_events()) == 1
+
+
+def test_paused_alerts_stay_quiet(tmp_path):
+    db = Store(tmp_path / "alerts.db")
+    alert_id, logic = _alert(db, {"kind": "stock", "symbol": "ABC", "metric": "close", "op": "above", "value": 1.0, "note": ""})
+    db.set_history_from("ABC", "2026-01-01")
+    db.replace_prices("ABC", _series_frame([5, 6]))
+    db.alert_set_enabled(alert_id, False)
+    logic.evaluate_all(db, Ctx(db))
+    assert db.alert_events() == []
+    db.alert_set_enabled(alert_id, True)
+    logic.evaluate_all(db, Ctx(db))
+    assert len(db.alert_events()) == 1
+
+
+def test_alert_api_round_trip(client, store):
+    created = client.post("/api/alerts", json={"kind": "signal", "signal": "vix", "op": "above", "value": 0, "note": "test"}).json()
+    assert created["label"].startswith("VIX is above")
+    body = client.get("/api/alerts").json()
+    assert any(alert["id"] == created["id"] for alert in body["alerts"])
+    assert body["unread"] >= 1
+    assert client.get("/api/status").json()["alerts_unread"] >= 1
+    assert client.patch(f"/api/alerts/{created['id']}", json={"enabled": False}).json()["enabled"] is False
+    assert client.post("/api/alerts/read").status_code == 200
+    assert client.get("/api/alerts").json()["unread"] == 0
+    assert client.delete(f"/api/alerts/{created['id']}").status_code == 200
+    assert client.delete(f"/api/alerts/{created['id']}").status_code == 404
+    client.delete("/api/alerts/events")
+    assert client.get("/api/alerts").json()["events"] == []
+
+
+def test_alert_preview_reports_the_current_value(client):
+    body = client.post("/api/alerts/preview", json={"kind": "stock", "symbol": "NVDA", "metric": "rsi14", "op": "below", "value": 30}).json()
+    assert 0 <= body["status"]["value"] <= 100
+
+
+@pytest.mark.parametrize("payload,status", [
+    ({"kind": "signal", "signal": "vix", "op": "sideways", "value": 1}, 400),
+    ({"kind": "signal", "signal": "vix", "op": "above", "value": "lots"}, 400),
+    ({"kind": "signal", "signal": "not_a_signal", "op": "above", "value": 1}, 400),
+    ({"kind": "stock", "symbol": "NVDA", "metric": "astrology", "op": "above", "value": 1}, 400),
+    ({"kind": "stock", "symbol": "NOSUCHTICK", "metric": "close", "op": "above", "value": 1}, 404),
+    ({"kind": "stock", "symbol": "../etc", "metric": "close", "op": "above", "value": 1}, 400),
+    ({"kind": "email", "op": "above", "value": 1}, 400),
+])
+def test_bad_alerts_are_refused(client, payload, status):
+    assert client.post("/api/alerts", json=payload).status_code == status
+
+
+def test_alert_stocks_are_kept_fresh(tmp_path, monkeypatch):
+    from src.data import refresh
+
+    db = Store(tmp_path / "fresh.db")
+    db.alert_add({"kind": "stock", "symbol": "XYZ", "metric": "close", "op": "above", "value": 1, "note": ""})
+    seen = []
+    monkeypatch.setattr(refresh, "refresh_prices", lambda store, symbols, start, **kwargs: seen.extend(symbols) or {"updated": len(symbols), "failed": []})
+    refresh._refresh_watchlist(db)
+    assert "XYZ" in seen
+
+
+def test_alert_preview_never_downloads(client, store, monkeypatch):
+    from src.data import market_data
+
+    monkeypatch.setattr(market_data, "yahoo_download", lambda *a, **k: (_ for _ in ()).throw(AssertionError("downloaded")))
+    body = client.post("/api/alerts/preview", json={"kind": "stock", "symbol": "NV", "metric": "close", "op": "above", "value": 1})
+    assert body.status_code == 200
+    assert body.json()["status"]["available"] is False
+    assert store.get_prices("NV").empty

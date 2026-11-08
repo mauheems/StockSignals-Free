@@ -4,6 +4,24 @@ import { chartCard, lineChart, rankedBars } from "../lib/charts.js";
 import { MISSING, fmt, fmtDate, h, replace } from "../lib/dom.js";
 import { info } from "../lib/guide.js";
 import { dataTable, deltaSpan, emptyBox, field, filters, pageHead, scoreBadge, segmented, sparkline, statusBadge, tile } from "../lib/ui.js";
+import { timeText } from "./alerts.js";
+
+function alertsCard(data) {
+  const active = data.alerts.filter((alert) => alert.enabled && alert.status.active && !alert.rule.op.startsWith("crosses")).length;
+  const head = h("div", { class: "card-head" },
+    h("h3", { class: "card-title" }, "Your alerts", info("alerts")),
+    h("a", { class: "btn btn-xs", href: "#/alerts" }, data.alerts.length ? "Open alerts" : "Create an alert"));
+  if (!data.alerts.length) {
+    return h("section", { class: "card" }, head, h("p", { class: "card-sub" }, "Get a notification when a signal or one of your stocks reaches a level you choose."));
+  }
+  const rows = data.events.slice(0, 4).map((event) => h("div", { class: `feed-row ${event.read ? "" : "is-unread"}`, style: { gridTemplateColumns: "92px minmax(0, 1fr)" } },
+    h("span", { class: "feed-date" }, timeText(event.at)),
+    h("span", { class: "feed-text" }, event.read ? null : h("span", { class: "unread-dot", "aria-label": "New" }), event.message)));
+  return h("section", { class: "card" }, head,
+    h("p", { class: "card-sub", style: { marginBottom: "4px" } },
+      `${data.alerts.length} alert${data.alerts.length === 1 ? "" : "s"}, ${active} with the condition met now${data.unread ? `, ${data.unread} new notification${data.unread === 1 ? "" : "s"}` : ""}.`),
+    rows.length ? h("div", { class: "feed" }, rows) : h("p", { class: "sub-text" }, "Nothing has fired yet."));
+}
 
 function meterColor(score) {
   if (score >= 60) return "var(--accent)";
@@ -158,7 +176,18 @@ export default {
     const signalsBox = h("div", {});
     const sideBox = h("div", { class: "stack" });
     const gammaBox = h("div", {});
+    const alertsBox = h("div", {});
     let last = null;
+
+    const loadAlerts = async () => {
+      try {
+        replace(alertsBox, alertsCard(await api.get("/api/alerts")));
+      } catch (error) {
+        replace(alertsBox, h("section", { class: "card" }, emptyBox(error.message)));
+      }
+    };
+    const onAlertsChanged = () => loadAlerts();
+    document.addEventListener("alerts-changed", onAlertsChanged);
 
     const drawSectors = () => {
       const period = SECTOR_PERIODS.find((item) => item.value === sectorPeriod).label;
@@ -177,7 +206,7 @@ export default {
       replace(signalsBox, h("section", { class: "card" },
         h("h3", { class: "card-title", style: { marginBottom: "6px" } }, "Key signals"),
         dataTable({ columns: SIGNAL_COLUMNS, rows: data.signals, empty: "Signals appear here as their data loads." })));
-      replace(sideBox, flipsCard(data.flips), catalystsCard(data.catalysts));
+      replace(sideBox, alertsBox, flipsCard(data.flips), catalystsCard(data.catalysts));
       replace(gammaBox, gammaCard(data.gamma));
       if (data.health.history) {
         heroBox.append(healthChart.el);
@@ -215,8 +244,13 @@ export default {
       h("div", { class: "grid grid-3" }, spxChart.el, sectorChart.el, gammaBox));
 
     draw(await api.get("/api/overview"));
+    await loadAlerts();
     return {
-      refresh: async () => draw(await api.get("/api/overview")),
+      refresh: async () => {
+        draw(await api.get("/api/overview"));
+        await loadAlerts();
+      },
+      unmount: () => document.removeEventListener("alerts-changed", onAlertsChanged),
     };
   },
 };

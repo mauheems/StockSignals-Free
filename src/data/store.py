@@ -62,6 +62,29 @@ CREATE TABLE IF NOT EXISTS watchlist (
     added_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at REAL NOT NULL,
+    last_state INTEGER,
+    last_value REAL,
+    last_date TEXT,
+    last_checked REAL,
+    last_event_key TEXT,
+    last_triggered REAL
+);
+
+CREATE TABLE IF NOT EXISTS alert_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id INTEGER NOT NULL,
+    at REAL NOT NULL,
+    date TEXT,
+    message TEXT NOT NULL,
+    value REAL,
+    read INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS source_status (
     source TEXT PRIMARY KEY,
     last_attempt REAL,
@@ -347,6 +370,95 @@ class Store:
                 [(symbol, now + index / 1000) for index, symbol in enumerate(symbols)],
             )
         self.kv_set("watchlist:seeded", True)
+
+    # ------------------------------------------------------------------- alerts
+    _ALERT_COLUMNS = "id, rule, enabled, created_at, last_state, last_value, last_date, last_checked, last_event_key, last_triggered"
+
+    def _alert_row(self, row) -> dict:
+        keys = [key.strip() for key in self._ALERT_COLUMNS.split(",")]
+        alert = dict(zip(keys, row))
+        alert["rule"] = json.loads(alert["rule"])
+        return alert
+
+    def alerts(self) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(f"SELECT {self._ALERT_COLUMNS} FROM alerts ORDER BY id").fetchall()
+        return [self._alert_row(row) for row in rows]
+
+    def alert(self, alert_id: int) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(f"SELECT {self._ALERT_COLUMNS} FROM alerts WHERE id = ?", (alert_id,)).fetchone()
+        return self._alert_row(row) if row else None
+
+    def alert_add(self, rule: dict) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute("INSERT INTO alerts (rule, created_at) VALUES (?, ?)", (json.dumps(rule), time.time()))
+            return int(cursor.lastrowid)
+
+    def alert_set_enabled(self, alert_id: int, enabled: bool) -> bool:
+        with self.connect() as conn:
+            # Re-enabling starts fresh, so a condition that is still true is reported again.
+            cursor = conn.execute(
+                "UPDATE alerts SET enabled = ?, last_state = CASE WHEN ? THEN NULL ELSE last_state END WHERE id = ?",
+                (int(enabled), int(enabled), alert_id),
+            )
+            return cursor.rowcount > 0
+
+    def alert_delete(self, alert_id: int) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute("DELETE FROM alerts WHERE id = ?", (alert_id,))
+            return cursor.rowcount > 0
+
+    def alert_update(self, alert_id: int, *, last_checked_only: bool = False, last_state: int | None = None,
+                     last_value: float | None = None, last_date: str | None = None,
+                     last_event_key: str | None = None, fired: bool = False) -> None:
+        now = time.time()
+        with self.connect() as conn:
+            if last_checked_only:
+                conn.execute("UPDATE alerts SET last_checked = ? WHERE id = ?", (now, alert_id))
+                return
+            conn.execute(
+                "UPDATE alerts SET last_state = ?, last_value = ?, last_date = ?, last_checked = ?, last_event_key = ?, "
+                "last_triggered = CASE WHEN ? THEN ? ELSE last_triggered END WHERE id = ?",
+                (last_state, _clean(last_value), last_date, now, last_event_key, int(fired), now, alert_id),
+            )
+
+    def alert_symbols(self) -> list[str]:
+        symbols = set()
+        for alert in self.alerts():
+            if alert["rule"].get("kind") == "stock":
+                symbols.add(alert["rule"]["symbol"])
+        return sorted(symbols)
+
+    def alert_event_add(self, alert_id: int, date: str | None, message: str, value: float | None) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO alert_events (alert_id, at, date, message, value) VALUES (?, ?, ?, ?, ?)",
+                (alert_id, time.time(), date, message, _clean(value)),
+            )
+            # Keep the history to a sensible size.
+            conn.execute("DELETE FROM alert_events WHERE id NOT IN (SELECT id FROM alert_events ORDER BY id DESC LIMIT 500)")
+
+    def alert_events(self, limit: int = 100) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, alert_id, at, date, message, value, read FROM alert_events ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        keys = ["id", "alert_id", "at", "date", "message", "value", "read"]
+        return [{**dict(zip(keys, row)), "read": bool(row[6])} for row in rows]
+
+    def alert_events_unread(self) -> int:
+        with self.connect() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM alert_events WHERE read = 0").fetchone()[0])
+
+    def alert_events_mark_read(self) -> None:
+        with self.connect() as conn:
+            conn.execute("UPDATE alert_events SET read = 1 WHERE read = 0")
+
+    def alert_events_clear(self) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM alert_events")
 
     # ------------------------------------------------------------- source status
     def status_attempt(self, source: str) -> None:
