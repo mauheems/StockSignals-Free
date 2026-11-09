@@ -1,4 +1,5 @@
 // App shell: navigation, routing, global ticker search, data status and theme.
+import { initAlertDrawer, pageChanged, routeContext } from "./lib/alert-drawer.js";
 import { api, query } from "./lib/api.js";
 import { disposeCharts } from "./lib/charts.js";
 import { debounce, fmtAgo, h, replace } from "./lib/dom.js";
@@ -45,7 +46,8 @@ bannerEl.hidden = true;
 const statusDot = h("span", { class: "status-dot" });
 const statusText = h("span", {}, "Connecting…");
 const freshnessText = h("span", { class: "sub-text" });
-const alertLink = h("a", { class: "btn btn-xs", href: "#/alerts", id: "alert-link", title: "Your alerts and notifications" }, "Alerts");
+// Opens the alert drawer on any page; the Alerts page in the sidebar has the full list.
+const alertLink = h("button", { class: "btn btn-xs", type: "button", id: "alert-link", title: "Create an alert and see your latest notifications" }, "Alerts");
 
 function showUnread(count) {
   replace(alertLink, "Alerts", count ? h("span", { class: "alert-count", "aria-label": `${count} new notifications` }, String(count)) : null);
@@ -87,6 +89,7 @@ async function route() {
     window.scrollTo(0, 0);
     document.title = `${PAGES[page].title(params)} · Market Signals`;
     if (currentPage.afterAttach) currentPage.afterAttach();
+    pageChanged();
   } catch (error) {
     console.warn(`Page ${page} failed to load:`, error);
     if (currentRoute().page === page) {
@@ -299,6 +302,14 @@ async function boot() {
     replace(contentEl, errorBox(error.message, () => location.reload()));
     return;
   }
+  initAlertDrawer({
+    button: alertLink,
+    // A page can say what it shows (Chart Lab's current symbol, say); otherwise the route decides.
+    getContext: (catalog) => {
+      const { page, params } = currentRoute();
+      return currentPage?.alertContext?.() ?? routeContext(page, params, catalog);
+    },
+  });
   window.addEventListener("hashchange", route);
   document.addEventListener("alerts-changed", pollStatusOnce);
   await route();

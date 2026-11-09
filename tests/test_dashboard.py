@@ -678,3 +678,17 @@ def test_futures_bars_are_never_marked_as_extended():
     index = pd.DatetimeIndex(["2026-11-06 03:00", "2026-11-06 12:00", "2026-11-06 18:00"])
     assert bar_sessions(index, "ES=F") == ["regular"] * 3
     assert bar_sessions(index, "SPY") == ["pre", "regular", "post"]
+
+
+# ------------------------------------------------------------------- alert drawer
+def test_alert_on_an_index_name_watches_the_index(client):
+    body = client.post("/api/alerts/preview", json={"kind": "stock", "symbol": "spx", "metric": "close", "op": "above", "value": 1}).json()
+    assert body["status"]["available"] is True
+    assert body["label"].startswith("^GSPC")
+
+
+def test_signal_catalog_says_which_page_shows_each_signal(client):
+    signals = [item for group in client.get("/api/signals").json()["groups"] for item in group["signals"]]
+    pages = {item["id"]: item["page"] for item in signals}
+    assert pages["vix"] == "volatility"
+    assert all(pages.values())

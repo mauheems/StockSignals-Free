@@ -858,7 +858,7 @@ def signal_catalog() -> dict:
     groups = []
     for group in sig.SIGNAL_GROUPS:
         items = [
-            {"id": item.id, "label": item.label, "fmt": item.fmt, "metric": item.metric, "positive_only": item.positive_only}
+            {"id": item.id, "label": item.label, "fmt": item.fmt, "metric": item.metric, "positive_only": item.positive_only, "page": item.page}
             for item in sig.SIGNALS
             if item.group == group
         ]

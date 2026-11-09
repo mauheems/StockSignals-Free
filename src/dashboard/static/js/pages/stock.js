@@ -1,4 +1,5 @@
 // Everything about one stock: trend, momentum, volume, options, short interest, fundamentals.
+import { openAlertDrawer } from "../lib/alert-drawer.js";
 import { api } from "../lib/api.js";
 import { chartCard, lineChart } from "../lib/charts.js";
 import { MISSING, compact, daysUntil, fmt, fmtDate, h, replace } from "../lib/dom.js";
@@ -177,6 +178,7 @@ export default {
     const symbol = (params[0] || "SPY").toUpperCase();
     const data = await api.get(`/api/stock/${encodeURIComponent(symbol)}`);
     const s = data.snapshot;
+    const alertContext = () => ({ kind: "stock", symbol: data.symbol, label: data.symbol });
     let inWatchlist = data.in_watchlist;
 
     const watchButton = h("button", { class: "btn", type: "button", id: "watch-toggle" });
@@ -231,7 +233,7 @@ export default {
         h("div", { style: { display: "flex", gap: "6px", marginLeft: "auto", flexWrap: "wrap" } },
           watchButton,
           h("a", { class: "btn", href: `#/chart/${encodeURIComponent(data.symbol)}` }, "Open in Chart Lab"),
-          h("a", { class: "btn", href: `#/alerts/new/${encodeURIComponent(data.symbol)}` }, "Add alert"),
+          h("button", { class: "btn", type: "button", id: "stock-add-alert", onclick: () => openAlertDrawer(alertContext()) }, "Add alert"),
           h("a", { class: "btn", href: `#/backtest/${encodeURIComponent(data.symbol)}` }, "Backtest this"))),
       data.chips.length ? chipsBox : null,
       periodCells(s),
@@ -267,6 +269,7 @@ export default {
 
     const extendedTimer = setInterval(loadExtended, 3 * 60 * 1000);
     return {
+      alertContext,
       unmount: () => {
         active = false;
         clearInterval(extendedTimer);

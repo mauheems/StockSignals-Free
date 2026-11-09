@@ -279,8 +279,15 @@ def create_app(store: Store | None = None, *, background: bool = True) -> FastAP
             ],
         }
 
+    def alert_body(body: dict) -> dict:
+        # Index names such as SPX (from the options page) watch their Yahoo price symbol.
+        if body.get("kind") == "stock" and body.get("symbol"):
+            return {**body, "symbol": payloads.price_symbol(str(body["symbol"]).strip().upper())}
+        return body
+
     @app.post("/api/alerts")
     def alert_create(body: dict = Body(...)):
+        body = alert_body(body)
         if len(store.alerts()) >= alert_logic.MAX_ALERTS:
             raise HTTPException(status_code=400, detail=f"You can have up to {alert_logic.MAX_ALERTS} alerts. Delete one first.")
         rule = alert_logic.parse_rule(body, store, lambda db, symbol: ensure_prices(db, symbol))
@@ -293,7 +300,7 @@ def create_app(store: Store | None = None, *, background: bool = True) -> FastAP
     def alert_preview(body: dict = Body(...)):
         # Called while the user types, so it only reads stored data and never downloads:
         # half-typed tickers must not be fetched or saved.
-        rule = alert_logic.parse_rule(body, store, lambda db, symbol: None)
+        rule = alert_logic.parse_rule(alert_body(body), store, lambda db, symbol: None)
         view = alert_logic.alert_view({"id": 0, "rule": rule, "enabled": 1, "created_at": None, "last_triggered": None}, store, services.ctx())
         return {"label": view["label"], "fmt": view["fmt"], "status": view["status"]}
 

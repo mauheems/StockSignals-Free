@@ -33,7 +33,7 @@ ROUTES = set(PAGES) | {"stock"}
 BAD_TEXT = re.compile(r"\b(undefined|NaN|null|\[object Object\]|Infinity)\b")
 LONG_DECIMAL = re.compile(r"\d\.\d{7,}")
 # Buttons that change saved state are exercised by their own scenarios, not the sweep.
-SKIP_SELECTOR = "[data-remove], [data-watch], [data-danger], #watch-toggle, #refresh-all, #theme-toggle, #create-alert, [data-source], .search-item"
+SKIP_SELECTOR = "[data-remove], [data-watch], [data-danger], #watch-toggle, #refresh-all, #theme-toggle, #create-alert, #drawer-create-alert, #stock-add-alert, [data-source], .search-item"
 
 
 class Run:
@@ -324,7 +324,7 @@ def scenario_rotation(run: Run) -> None:
     run.visit("rotation")
     page = run.page
     run.click(page.locator("table.data tbody tr").first, "select a rotation row")
-    run.click(page.locator("button.chip").first, "select a quadrant chip")
+    run.click(page.locator("button.quad-item").first, "select a quadrant member")
     run.choose("Performance mode", "Absolute")
     run.check_page("absolute")
     run.choose("Lens", "Daily")
@@ -758,6 +758,72 @@ def scenario_alerts(run: Run) -> None:
         run.problem("alerts were not restored after the test")
 
 
+def scenario_drawer(run: Run) -> None:
+    """The alert drawer: opens on any page, starts from what's on screen, creates an alert."""
+    page = run.page
+    before = json.loads(page.evaluate("() => fetch('/api/alerts').then((r) => r.text())"))
+    existing = {alert["id"] for alert in before["alerts"]}
+    run.visit("volatility")
+    run.click("#alert-link", "open the alert drawer")
+    page.wait_for_selector(".drawer.is-open #drawer-alert-signal", timeout=30000)
+    run.idle()
+    if page.locator("#drawer-alert-signal").input_value() != "vix":
+        run.problem("on the Volatility page the drawer did not start from VIX")
+    if not page.locator("#drawer-alert-signal optgroup[label='On this page']").count():
+        run.problem("drawer does not list the page's own signals first")
+    if page.evaluate("() => document.activeElement?.id") != "drawer-alert-value":
+        run.problem("opening the drawer did not put the cursor in the level field")
+    # On a wide screen the page makes room, so the drawer hides nothing.
+    content_right = page.evaluate("() => document.querySelector('#content').getBoundingClientRect().right")
+    drawer_left = page.evaluate("() => document.querySelector('.drawer').getBoundingClientRect().left")
+    if content_right > drawer_left + 1:
+        run.problem("the drawer covers part of the page")
+    run.check_page("volatility with drawer")
+    if SHOTS:
+        page.screenshot(path=f"{SHOTS}/drawer_volatility.png")
+    # Moving to a stock, with the form untouched, follows the page.
+    run.visit("stock/NVDA")
+    page.wait_for_function("() => document.querySelector('#drawer-alert-symbol')?.value === 'NVDA'", timeout=30000)
+    # A level far away, so the test alert never fires and leaves no notification behind.
+    page.locator("#drawer-alert-op").select_option("above")
+    page.locator("#drawer-alert-value").fill("100000")
+    run.click("#drawer-create-alert", "create an alert from the drawer")
+    page.wait_for_selector(".toast:has-text('Alert created')", timeout=30000)
+    run.settle()
+    if SHOTS:
+        page.screenshot(path=f"{SHOTS}/drawer_stock.png")
+    after = json.loads(page.evaluate("() => fetch('/api/alerts').then((r) => r.text())"))
+    created = [alert for alert in after["alerts"] if alert["id"] not in existing]
+    if len(created) != 1 or created[0]["rule"].get("symbol") != "NVDA":
+        run.problem(f"expected one new NVDA alert from the drawer, found {[alert['label'] for alert in created]}")
+    # Escape closes it, and the page gets its full width back.
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(400)
+    if page.locator(".drawer.is-open").count():
+        run.problem("Escape did not close the drawer")
+    # The stock page's own button opens it too, and Chart Lab passes its symbol.
+    run.click("#stock-add-alert", "add alert from the stock page")
+    page.wait_for_function("() => document.querySelector('#drawer-alert-symbol')?.value === 'NVDA'", timeout=30000)
+    run.click("#close-alert-drawer", "close the drawer")
+    page.wait_for_timeout(400)
+    run.visit("options/SPX")
+    run.click("#alert-link", "open the drawer on the options page")
+    page.wait_for_function("() => document.querySelector('#drawer-alert-symbol')?.value === 'SPX'", timeout=30000)
+    # The current value arrives from a preview request that starts 300 ms after the form changes.
+    try:
+        page.wait_for_function("() => (document.querySelector('.drawer .rule-hint')?.textContent || '').startsWith('Now')", timeout=15000)
+    except Exception:
+        run.problem(f"an SPX alert from the options page shows no current value: {page.locator('.drawer .rule-hint').inner_text()!r}")
+    run.click("#alert-link", "close the drawer from the top bar")
+    page.wait_for_timeout(400)
+    for alert in created:
+        page.evaluate(f"() => fetch('/api/alerts/{alert['id']}', {{ method: 'DELETE' }})")
+    final = json.loads(page.evaluate("() => fetch('/api/alerts').then((r) => r.text())"))
+    if {alert["id"] for alert in final["alerts"]} != existing:
+        run.problem("alerts were not restored after the drawer test")
+    run.ok()
+
+
 def scenario_extended(run: Run) -> None:
     """Pre-market, after-hours and futures prices. Only checkable outside regular hours."""
     page = run.page
@@ -859,7 +925,7 @@ def main() -> int:
         scenarios = [
             scenario_shell, scenario_overview, scenario_rotation, scenario_options, scenario_watchlist,
             scenario_scanner, scenario_stock, scenario_chart, scenario_backtest, scenario_study,
-            scenario_guide, scenario_alerts, scenario_extended, scenario_sources,
+            scenario_guide, scenario_alerts, scenario_drawer, scenario_extended, scenario_sources,
         ]
         for scenario in scenarios:
             name = scenario.__name__.removeprefix("scenario_")

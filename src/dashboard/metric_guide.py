@@ -324,7 +324,7 @@ METRICS: dict[str, dict] = {
     "rotation_map": _m(
         "Rotation map", "rotation",
         "Shows each sector or asset's relative strength against a benchmark (x-axis) and whether that strength is improving (y-axis), with a tail for recent weeks.",
-        "Things often move clockwise: Improving, then Leading, then Weakening, then Lagging. The most interesting are moving from Improving into Leading, or falling from Weakening into Lagging.",
+        "Each dot is the latest reading, coloured by its quadrant (green Leading, amber Weakening, red Lagging, blue Improving). Its tail fades back through earlier weeks, so you can see which way it is heading. Things often move clockwise: Improving, then Leading, then Weakening, then Lagging. The most interesting are moving from Improving into Leading, or falling from Weakening into Lagging. Long tails mean big swings, so treat them with more caution.",
         "RS-Ratio = 100 + z-score of (price / benchmark) over 14 periods. RS-Momentum = 100 + z-score of the change in RS-Ratio over 14 periods. Uses dividend-adjusted weekly or daily prices.",
         "Calculated here from Yahoo Finance prices",
         "Inspired by Relative Rotation Graphs. The commercial formula is proprietary, so values here are an open approximation.",
@@ -1237,7 +1237,7 @@ METRICS: dict[str, dict] = {
     # ------------------------------------------------------------------------ alerts
     "alerts": _m(
         "Alerts", "alerts",
-        "Your own notifications: watch a market signal or a stock, and get a note when it reaches a level you choose.",
+        "Your own notifications: watch a market signal or a stock, and get a note when it reaches a level you choose. Create one from any page with the Alerts button in the top bar: it starts from the stock or signal on screen.",
         "Notifications appear on the Alerts page, in the top bar and on the Overview. They are checked every time new data arrives, so they're as delayed as the data itself: about 15 minutes for prices during market hours, longer for daily or weekly data. They only work while the dashboard is running.",
         "Each check takes the latest reading and the one before it, and compares them with your level.",
         "Calculated here from the same data as the rest of the dashboard",

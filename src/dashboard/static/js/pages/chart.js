@@ -911,6 +911,7 @@ export default {
     await load();
     return {
       refresh: load,
+      alertContext: () => (data ? { kind: "stock", symbol: data.symbol, label: data.symbol } : null),
       afterAttach: () => {
         if (handle) handle.chart.resize();
       },

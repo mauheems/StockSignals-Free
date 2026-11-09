@@ -1,80 +1,136 @@
 // Where money is moving: a rotation map, relative performance and risk-appetite ratios.
 import { api, query } from "../lib/api.js";
 import { baseOption, chartCard, colors, lineChart, tooltipRows } from "../lib/charts.js";
-import { MISSING, fmt, h, prefs, replace } from "../lib/dom.js";
+import { MISSING, fmt, fmtDate, h, prefs, replace } from "../lib/dom.js";
 import { info } from "../lib/guide.js";
 import { dataTable, deltaSpan, field, fillSelect, filters, heatCell, pageHead, segmented, select, sparkline, statusBadge, symbolLink, tile } from "../lib/ui.js";
 
-const QUADRANT_TONE = { Leading: "good", Weakening: "warning", Lagging: "critical", Improving: "neutral" };
+const QUADRANT_TONE = { Leading: "good", Weakening: "warning", Lagging: "critical", Improving: "info" };
 const QUADRANT_NOTE = {
   Improving: "Weak, but gaining momentum",
   Leading: "Strong and getting stronger",
   Weakening: "Strong, but losing momentum",
   Lagging: "Weak and getting weaker",
 };
+// Same layout as the map: momentum up top, strength on the right.
+const QUADRANT_GRID = ["Improving", "Leading", "Lagging", "Weakening"];
 
-function mapChart(points, highlighted) {
+/** The usual rotation-chart colours: green leading, amber weakening, red lagging, blue improving. */
+function quadrantColor(c, quadrant) {
+  return { Leading: c.good, Weakening: c.warning, Lagging: c.critical, Improving: c.accent }[quadrant] || c.muted;
+}
+
+function alpha(hex, opacity) {
+  const value = hex.replace("#", "");
+  const full = value.length === 3 ? value.split("").map((part) => part + part).join("") : value;
+  const [r, g, b] = [0, 2, 4].map((offset) => parseInt(full.slice(offset, offset + 2), 16));
+  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+}
+
+function mapChart(points, highlighted, showTails, lensWord) {
   if (!points.length) return { empty: "Not enough history to place these symbols on the map yet." };
   const c = colors();
-  const all = points.flatMap((point) => point.trail);
-  // Whole-number bounds, centred on 100, so the quadrants stay equal and the ticks clean.
-  const reach = Math.ceil(Math.max(1.5, ...all.map((p) => Math.abs(p.x - 100)), ...all.map((p) => Math.abs(p.y - 100))) * 1.08);
+  const shown = showTails ? points.flatMap((point) => point.trail) : points.map((point) => point.trail[point.trail.length - 1]);
+  // Bounds centred on 100, so the four quadrants are the same size.
+  const reach = Math.ceil(Math.max(1.5, ...shown.map((p) => Math.abs(p.x - 100)), ...shown.map((p) => Math.abs(p.y - 100))) * 1.1);
   const min = 100 - reach;
   const max = 100 + reach;
-  const wash = (color) => `color-mix(in srgb, ${color} 8%, transparent)`;
+  const corner = (name, position) => ({
+    name,
+    itemStyle: { color: alpha(quadrantColor(c, name), 0.09) },
+    label: { position, color: quadrantColor(c, name), fontSize: 12.5, fontWeight: 700, distance: 8 },
+  });
 
-  // Many tails at once: all in gray with direct labels at the head, one highlighted on hover.
-  const series = [{
-    type: "scatter",
-    data: [],
-    silent: true,
-    markArea: {
-      silent: true,
-      label: { show: true, position: "insideTopLeft", color: c.muted, fontSize: 11 },
-      data: [
-        [{ coord: [100, 100], name: "Leading", itemStyle: { color: wash(c.up) } }, { coord: [max, max] }],
-        [{ coord: [100, min], name: "Weakening", label: { position: "insideBottomRight" }, itemStyle: { color: wash(c.warning) } }, { coord: [max, 100] }],
-        [{ coord: [min, min], name: "Lagging", label: { position: "insideBottomLeft" }, itemStyle: { color: wash(c.down) } }, { coord: [100, 100] }],
-        [{ coord: [min, 100], name: "Improving", label: { position: "insideTopRight" }, itemStyle: { color: wash(c.muted) } }, { coord: [100, max] }],
-      ],
-    },
-    markLine: {
-      silent: true,
-      symbol: "none",
-      lineStyle: { color: c.axis, width: 1, type: "solid" },
-      label: { show: false },
-      data: [{ xAxis: 100 }, { yAxis: 100 }],
-    },
-  }];
+  const tails = [];
+  const steps = [];
+  const heads = [];
   for (const point of points) {
-    const isHot = point.symbol === highlighted;
-    const color = isHot ? c.accent : c.deemph;
-    series.push({
-      name: point.symbol,
-      type: "line",
-      data: point.trail.map((p) => [p.x, p.y, p.date]),
-      showSymbol: false,
-      symbol: "circle",
-      symbolSize: 4,
-      z: isHot ? 5 : 2,
-      lineStyle: { width: isHot ? 2 : 1, color, opacity: isHot || !highlighted ? 1 : 0.45 },
-      itemStyle: { color },
-      emphasis: { disabled: true },
-      silent: true,
-    });
-    const head = point.trail[point.trail.length - 1];
-    series.push({
-      name: point.symbol,
-      type: "scatter",
-      data: [{ value: [head.x, head.y], name: point.name, ticker: point.symbol, quadrant: point.quadrant, date: head.date }],
-      symbolSize: isHot ? 12 : 9,
-      z: isHot ? 6 : 3,
-      itemStyle: { color: isHot ? c.accent : c.ink2, borderColor: c.surface, borderWidth: 2 },
-      label: { show: true, position: "right", distance: 4, color: c.ink, fontSize: 11, fontWeight: isHot ? 650 : 500, formatter: () => point.symbol },
-      labelLayout: { hideOverlap: false, moveOverlap: "shiftY" },
-      emphasis: { scale: 1.3 },
+    const color = quadrantColor(c, point.quadrant);
+    const hot = point.symbol === highlighted;
+    const dim = highlighted && !hot ? 0.22 : 1;
+    const trail = point.trail;
+    const last = trail.length - 1;
+    if (showTails) {
+      // Older segments are thinner and fainter, so each tail shows where it came from.
+      for (let i = 1; i <= last; i += 1) {
+        const age = i / last;
+        tails.push({
+          coords: [[trail[i - 1].x, trail[i - 1].y], [trail[i].x, trail[i].y]],
+          lineStyle: { color, width: (hot ? 1.6 : 1) + 1.6 * age, opacity: (0.2 + 0.65 * age) * dim, cap: "round" },
+        });
+      }
+      for (let i = 0; i < last; i += 1) {
+        steps.push({
+          value: [trail[i].x, trail[i].y],
+          ticker: point.symbol,
+          name: point.name,
+          date: trail[i].date,
+          itemStyle: { color, opacity: (0.3 + 0.55 * (i / last)) * dim },
+          label: hot ? { show: true, formatter: fmtDate(trail[i].date), position: "top", color: c.ink2, fontSize: 10 } : { show: false },
+        });
+      }
+    }
+    const head = trail[last];
+    heads.push({
+      value: [head.x, head.y],
+      ticker: point.symbol,
+      name: point.name,
+      quadrant: point.quadrant,
+      date: head.date,
+      symbolSize: hot ? 15 : 11,
+      itemStyle: { color, opacity: highlighted && !hot ? 0.4 : 1, borderColor: c.surface, borderWidth: 2 },
+      label: { color: highlighted && !hot ? c.muted : c.ink, fontWeight: hot ? 700 : 600 },
     });
   }
+
+  // Labels sit right of their dot, unless another dot is in the way: then left, or above.
+  // Sizes are rough label dimensions in data units, for a plot about 700 pixels wide.
+  const unit = (2 * reach) / 700;
+  const blocked = (head, dx0, dx1, dy) => heads.some((other) => other !== head
+    && other.value[0] - head.value[0] > dx0 && other.value[0] - head.value[0] < dx1
+    && Math.abs(other.value[1] - head.value[1]) < dy);
+  for (const head of heads) {
+    const width = (10 + head.ticker.length * 7.5) * unit;
+    const height = 14 * unit;
+    if (!blocked(head, 0, width, height)) head.label.position = "right";
+    else if (!blocked(head, -width, 0, height)) head.label.position = "left";
+    else head.label.position = "top";
+  }
+
+  const series = [
+    {
+      type: "scatter",
+      data: [],
+      silent: true,
+      markArea: {
+        silent: true,
+        data: [
+          [{ coord: [min, 100], ...corner("Improving", "insideTopLeft") }, { coord: [100, max] }],
+          [{ coord: [100, 100], ...corner("Leading", "insideTopRight") }, { coord: [max, max] }],
+          [{ coord: [min, min], ...corner("Lagging", "insideBottomLeft") }, { coord: [100, 100] }],
+          [{ coord: [100, min], ...corner("Weakening", "insideBottomRight") }, { coord: [max, 100] }],
+        ],
+      },
+      markLine: {
+        silent: true,
+        symbol: "none",
+        lineStyle: { color: c.axis, width: 1, type: "solid" },
+        label: { show: false },
+        data: [{ xAxis: 100 }, { yAxis: 100 }],
+      },
+    },
+    { type: "lines", coordinateSystem: "cartesian2d", polyline: false, data: tails, silent: true, z: 2, animation: false },
+    { type: "scatter", data: steps, symbolSize: 5, z: 3, emphasis: { disabled: true }, animation: false },
+    {
+      type: "scatter",
+      data: heads,
+      z: 5,
+      label: { show: true, position: "right", distance: 5, fontSize: 11.5, formatter: (item) => item.data.ticker },
+      labelLayout: { hideOverlap: false, moveOverlap: "shiftY" },
+      emphasis: { scale: 1.25 },
+      animation: false,
+    },
+  ];
   const axis = (name) => ({
     type: "value",
     name,
@@ -87,13 +143,13 @@ function mapChart(points, highlighted) {
     axisLine: { show: false },
     axisTick: { show: false },
     splitLine: { show: true, lineStyle: { color: c.grid, width: 1, type: "solid" } },
-    axisLabel: { color: c.muted, formatter: (value) => value.toFixed(1) },
+    axisLabel: { color: c.muted, formatter: (value) => value.toFixed(0) },
   });
   const option = {
     ...baseOption(),
-    grid: { left: 54, right: 26, top: 10, bottom: 40 },
-    xAxis: axis("Relative strength (RS-Ratio)"),
-    yAxis: { ...axis("Relative momentum (RS-Momentum)"), nameGap: 40 },
+    grid: { left: 50, right: 30, top: 10, bottom: 40 },
+    xAxis: axis("Relative strength (RS-Ratio) →"),
+    yAxis: { ...axis("Momentum (RS-Momentum) →"), nameGap: 34 },
     series,
   };
   option.tooltip = {
@@ -101,8 +157,10 @@ function mapChart(points, highlighted) {
     trigger: "item",
     formatter: (item) => {
       if (!item.data || !item.data.ticker) return "";
+      const isHead = !!item.data.quadrant;
       return tooltipRows(`${item.data.ticker} · ${item.data.name}`, [
-        { color: c.accent, value: item.data.quadrant, name: "Quadrant" },
+        { color: c.deemph, value: isHead ? `Latest (${fmtDate(item.data.date)})` : `${fmtDate(item.data.date)}, earlier ${lensWord}`, name: "Reading" },
+        ...(isHead ? [{ color: quadrantColor(c, item.data.quadrant), value: item.data.quadrant, name: "Quadrant" }] : []),
         { color: c.deemph, value: item.data.value[0].toFixed(2), name: "RS-Ratio" },
         { color: c.deemph, value: item.data.value[1].toFixed(2), name: "RS-Momentum" },
       ]);
@@ -156,8 +214,8 @@ export default {
     let data = null;
     let highlighted = null;
 
-    const mapCard = chartCard({ title: "Rotation map", metric: "rotation_map", subtitle: "Things tend to rotate clockwise. Select a dot, chip or table row to highlight its trail", height: 520 });
-    const quadrantBox = h("section", { class: "card" });
+    const mapCard = chartCard({ title: "Rotation map", metric: "rotation_map", height: 540 });
+    const quadrantBox = h("section", { class: "card quad-card" });
     const performanceBox = h("section", { class: "card" });
     const ratiosBox = h("div", { class: "grid cols-5" });
     const riskBox = h("div", { class: "split-3-1" });
@@ -170,7 +228,11 @@ export default {
 
     let mapClicks = false;
     const drawMap = () => {
-      mapCard.render(mapChart(data.points, highlighted));
+      const lensWord = state.lens === "weekly" ? "week" : "day";
+      mapCard.setSubtitle(state.tail
+        ? `Each dot is the latest ${lensWord}; its tail fades back through the previous ${state.tail} ${lensWord}s. Things tend to rotate clockwise. Select a dot, chip or row to follow one.`
+        : `Each dot is the latest ${lensWord}. Things tend to rotate clockwise. Select a dot, chip or row to highlight it.`);
+      mapCard.render(mapChart(data.points, highlighted, state.tail > 0, lensWord));
       if (!mapClicks && mapCard.chart) {
         mapClicks = true;
         mapCard.chart.on("click", (event) => {
@@ -185,25 +247,32 @@ export default {
     };
 
     const drawQuadrants = () => {
+      const c = colors();
       const groups = { Improving: [], Leading: [], Weakening: [], Lagging: [] };
       for (const point of data.points) groups[point.quadrant].push(point);
+      const pick = (symbol) => {
+        highlighted = highlighted === symbol ? null : symbol;
+        drawMap();
+        drawQuadrants();
+        drawPerformance();
+      };
       replace(quadrantBox,
-        h("h3", { class: "card-title", style: { marginBottom: "6px" } }, "By quadrant", info("quadrant")),
-        Object.entries(groups).map(([name, points]) => h("div", { style: { marginBottom: "8px" } },
-          statusBadge(QUADRANT_TONE[name], name),
-          h("p", { class: "quadrant-note" }, QUADRANT_NOTE[name]),
-          h("div", { class: "chips", style: { marginTop: "3px" } },
-            points.length ? points.map((point) => h("button", {
-              class: "chip",
-              type: "button",
-              title: `Highlight ${point.name}`,
-              style: { cursor: "pointer", fontWeight: point.symbol === highlighted ? "700" : "500" },
-              onclick: () => {
-                highlighted = highlighted === point.symbol ? null : point.symbol;
-                drawMap();
-                drawQuadrants();
-              },
-            }, point.symbol)) : h("span", { class: "sub-text" }, "None")))));
+        h("h3", { class: "card-title", style: { marginBottom: "8px" } }, "By quadrant", info("quadrant")),
+        h("div", { class: "quad-grid" }, QUADRANT_GRID.map((name) => h("div", {
+          class: "quad-cell",
+          style: { background: alpha(quadrantColor(c, name), 0.09), borderColor: alpha(quadrantColor(c, name), 0.35) },
+        },
+        h("div", { class: "quad-head" }, statusBadge(QUADRANT_TONE[name], name), h("span", { class: "sub-text" }, String(groups[name].length))),
+        h("p", { class: "quadrant-note" }, QUADRANT_NOTE[name]),
+        groups[name].length
+          ? h("div", { class: "quad-list" }, groups[name].map((point) => h("button", {
+            class: `quad-item ${point.symbol === highlighted ? "is-selected" : ""}`,
+            type: "button",
+            title: `Highlight ${point.name} on the map`,
+            "aria-pressed": String(point.symbol === highlighted),
+            onclick: () => pick(point.symbol),
+          }, h("b", {}, point.symbol), h("span", { class: "sub-text" }, point.name))))
+          : h("span", { class: "sub-text" }, "None right now")))));
     };
 
     const drawPerformance = () => {
@@ -253,7 +322,7 @@ export default {
 
     const load = async () => {
       mapCard.refreshing();
-      data = await api.get(`/api/rotation${query({ universe: state.universe, benchmark: state.benchmark, lens: state.lens, tail: state.tail })}`);
+      data = await api.get(`/api/rotation${query({ universe: state.universe, benchmark: state.benchmark, lens: state.lens, tail: state.tail || 4 })}`);
       if (highlighted && !data.points.some((point) => point.symbol === highlighted)) highlighted = null;
       draw();
     };
@@ -275,7 +344,7 @@ export default {
           state.lens = value;
           changed();
         }, "Lens")),
-        field("Trail length", segmented([{ value: 4, label: "4" }, { value: 8, label: "8" }, { value: 12, label: "12" }], state.tail, (value) => {
+        field("Trail length", segmented([{ value: 0, label: "Off" }, { value: 4, label: "4" }, { value: 8, label: "8" }, { value: 12, label: "12" }], state.tail, (value) => {
           state.tail = value;
           changed();
         }, "Trail length"))),

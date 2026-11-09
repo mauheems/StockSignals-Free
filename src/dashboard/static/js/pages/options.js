@@ -471,6 +471,7 @@ export default {
 
     await fillUnderlyings();
     await load();
-    return { refresh: load };
+    // The alert drawer starts from the underlying on screen (SPX watches the S&P 500 index).
+    return { refresh: load, alertContext: () => ({ kind: "stock", symbol: state.symbol, label: state.symbol }) };
   },
 };
