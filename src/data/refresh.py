@@ -11,6 +11,7 @@ import multiprocessing
 import signal
 import threading
 import time
+from pathlib import Path
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ import pandas as pd
 
 from src.analytics import options as option_analytics
 from src.analytics.breadth import refresh_breadth_tables
-from src.data import cboe, fundamentals, macro_sources
+from src.data import cboe, fundamentals, macro_sources, prediction_markets
 from src.data.catalog import BREADTH_HISTORY_START, CORE_HISTORY_START, CORE_SYMBOLS, OPTION_CORE
 from src.data.market_calendar import is_market_open, last_completed_session, now_et
 from src.data.market_data import refresh_prices
@@ -176,6 +177,9 @@ SOURCES: list[Source] = [
            "Stock pages", _refresh_finra, 6 * HOUR, 6 * HOUR),
     Source("events", "Fed and economic release calendar", "Federal Reserve, FRED", "Checked daily",
            "Overview catalysts", macro_sources.refresh_events, 24 * HOUR, 24 * HOUR, refresh_all_gap=1 * HOUR),
+    Source("prediction", "Fed, recession, inflation and earnings odds", "Kalshi, Polymarket", "Live market prices, checked every hour",
+           "Macro & Credit, Overview catalysts, stock pages", prediction_markets.refresh_prediction_markets, 1 * HOUR, 3 * HOUR,
+           refresh_all_gap=15 * MINUTE),
 ]
 SOURCE_BY_ID = {source.id: source for source in SOURCES}
 
@@ -322,6 +326,25 @@ def run_source(store: Store, source: Source) -> bool:
     return True
 
 
+_STARTED = time.time()
+_CODE_ROOT = Path(__file__).resolve().parents[1]
+
+
+def code_changed_since_start() -> bool:
+    """Whether the app's Python code was updated after this server started.
+
+    The browser always gets the newest page code from disk, but the server keeps running
+    the code it started with, so the two can disagree until the app is restarted.
+    """
+    for path in _CODE_ROOT.rglob("*.py"):
+        try:
+            if path.stat().st_mtime > _STARTED:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def status_payload(store: Store, refresher: Refresher | None) -> dict:
     statuses = store.status_all()
     running = set(refresher.running()) if refresher else set()
@@ -348,6 +371,7 @@ def status_payload(store: Store, refresher: Refresher | None) -> dict:
             "every_seconds": source.every_open if is_market_open() else source.every_closed,
         })
     return {
+        "code_changed": code_changed_since_start(),
         "version": store.version,
         "sources": rows,
         "running": sorted(running),

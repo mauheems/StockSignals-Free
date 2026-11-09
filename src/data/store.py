@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS kv (
 
 CREATE TABLE IF NOT EXISTS watchlist (
     symbol TEXT PRIMARY KEY,
-    added_at REAL NOT NULL
+    added_at REAL NOT NULL,
+    position REAL
 );
 
 CREATE TABLE IF NOT EXISTS alerts (
@@ -72,7 +73,8 @@ CREATE TABLE IF NOT EXISTS alerts (
     last_date TEXT,
     last_checked REAL,
     last_event_key TEXT,
-    last_triggered REAL
+    last_triggered REAL,
+    position REAL
 );
 
 CREATE TABLE IF NOT EXISTS alert_events (
@@ -114,6 +116,26 @@ class Store:
         self._version_lock = threading.Lock()
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate(conn)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Bring databases made by older versions up to date. Safe to run every time."""
+        # The watchlist and alerts gained a user-chosen order. Existing rows keep the
+        # order they had: watchlist by date added, alerts by creation.
+        for table, order in (("watchlist", "added_at, symbol"), ("alerts", "id")):
+            columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if "position" in columns:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN position REAL")
+            except sqlite3.OperationalError as exc:  # another process got there first
+                if "duplicate column" not in str(exc):
+                    raise
+                continue
+            key = "symbol" if table == "watchlist" else "id"
+            rows = conn.execute(f"SELECT {key} FROM {table} ORDER BY {order}").fetchall()
+            conn.executemany(f"UPDATE {table} SET position = ? WHERE {key} = ?", [(index + 1, row[0]) for index, row in enumerate(rows)])
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -331,6 +353,10 @@ class Store:
                 (key, json.dumps(value), time.time()),
             )
 
+    def kv_delete(self, key: str) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM kv WHERE key = ?", (key,))
+
     def kv_get(self, key: str, default=None, max_age: float | None = None):
         with self.connect() as conn:
             row = conn.execute("SELECT value, updated_at FROM kv WHERE key = ?", (key,)).fetchone()
@@ -348,12 +374,25 @@ class Store:
     # ---------------------------------------------------------------- watchlist
     def watchlist(self) -> list[str]:
         with self.connect() as conn:
-            rows = conn.execute("SELECT symbol FROM watchlist ORDER BY added_at, symbol").fetchall()
+            rows = conn.execute("SELECT symbol FROM watchlist ORDER BY position IS NULL, position, added_at, symbol").fetchall()
         return [row[0] for row in rows]
 
     def watchlist_add(self, symbol: str) -> None:
+        """Add a symbol at the end of the list."""
         with self.connect() as conn:
-            conn.execute("INSERT OR IGNORE INTO watchlist (symbol, added_at) VALUES (?, ?)", (symbol, time.time()))
+            conn.execute(
+                "INSERT OR IGNORE INTO watchlist (symbol, added_at, position) VALUES (?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM watchlist))",
+                (symbol, time.time()),
+            )
+
+    def watchlist_reorder(self, symbols: Iterable[str]) -> list[str]:
+        """Put the watchlist in the given order. Symbols not mentioned keep their place at the end."""
+        current = self.watchlist()
+        wanted = [symbol for symbol in dict.fromkeys(symbols) if symbol in current]
+        order = wanted + [symbol for symbol in current if symbol not in wanted]
+        with self.connect() as conn:
+            conn.executemany("UPDATE watchlist SET position = ? WHERE symbol = ?", [(index + 1, symbol) for index, symbol in enumerate(order)])
+        return order
 
     def watchlist_remove(self, symbol: str) -> None:
         with self.connect() as conn:
@@ -366,8 +405,8 @@ class Store:
         now = time.time()
         with self.connect() as conn:
             conn.executemany(
-                "INSERT OR IGNORE INTO watchlist (symbol, added_at) VALUES (?, ?)",
-                [(symbol, now + index / 1000) for index, symbol in enumerate(symbols)],
+                "INSERT OR IGNORE INTO watchlist (symbol, added_at, position) VALUES (?, ?, ?)",
+                [(symbol, now + index / 1000, index + 1) for index, symbol in enumerate(symbols)],
             )
         self.kv_set("watchlist:seeded", True)
 
@@ -382,8 +421,17 @@ class Store:
 
     def alerts(self) -> list[dict]:
         with self.connect() as conn:
-            rows = conn.execute(f"SELECT {self._ALERT_COLUMNS} FROM alerts ORDER BY id").fetchall()
+            rows = conn.execute(f"SELECT {self._ALERT_COLUMNS} FROM alerts ORDER BY position IS NULL, position, id").fetchall()
         return [self._alert_row(row) for row in rows]
+
+    def alerts_reorder(self, ids: Iterable[int]) -> list[int]:
+        """Put the alerts in the given order. Alerts not mentioned keep their place at the end."""
+        current = [alert["id"] for alert in self.alerts()]
+        wanted = [alert_id for alert_id in dict.fromkeys(ids) if alert_id in current]
+        order = wanted + [alert_id for alert_id in current if alert_id not in wanted]
+        with self.connect() as conn:
+            conn.executemany("UPDATE alerts SET position = ? WHERE id = ?", [(index + 1, alert_id) for index, alert_id in enumerate(order)])
+        return order
 
     def alert(self, alert_id: int) -> dict | None:
         with self.connect() as conn:
@@ -392,7 +440,10 @@ class Store:
 
     def alert_add(self, rule: dict) -> int:
         with self.connect() as conn:
-            cursor = conn.execute("INSERT INTO alerts (rule, created_at) VALUES (?, ?)", (json.dumps(rule), time.time()))
+            cursor = conn.execute(
+                "INSERT INTO alerts (rule, created_at, position) VALUES (?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM alerts))",
+                (json.dumps(rule), time.time()),
+            )
             return int(cursor.lastrowid)
 
     def alert_set_enabled(self, alert_id: int, enabled: bool) -> bool:

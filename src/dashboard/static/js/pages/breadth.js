@@ -98,10 +98,10 @@ export default {
         signalTile(rows.rsp_spy, { deltaFmt: "snum3" }));
       replace(indexBox,
         h("h3", { class: "card-title", style: { marginBottom: "6px" } }, "Index trend"),
-        dataTable({ columns: INDEX_COLUMNS, rows: data.indices, empty: "Index prices are still loading." }));
+        dataTable({ id: "breadth-indices", columns: INDEX_COLUMNS, rows: data.indices, empty: "Index prices are still loading." }));
       replace(sectorBox,
         h("h3", { class: "card-title", style: { marginBottom: "6px" } }, "Breadth by sector"),
-        dataTable({ columns: sectorColumns(), rows: data.sectors, empty: "Sector breadth appears after S&P 500 member prices load." }));
+        dataTable({ id: "breadth-sectors", columns: sectorColumns(), rows: data.sectors, empty: "Sector breadth appears after S&P 500 member prices load." }));
 
       const charts = data.charts;
       cards.spx.render(lineChart({

@@ -43,6 +43,9 @@ let pageFailed = false;
 const contentEl = h("main", { class: "content", id: "content" });
 const bannerEl = h("div", { class: "banner", role: "status" });
 bannerEl.hidden = true;
+const restartEl = h("div", { class: "banner banner-warning", role: "status", id: "restart-banner" },
+  "The dashboard's code was updated after it started, so some pages may not work until you restart it: press Ctrl+C where it runs, then start it again with python main.py.");
+restartEl.hidden = true;
 const statusDot = h("span", { class: "status-dot" });
 const statusText = h("span", {}, "Connecting…");
 const freshnessText = h("span", { class: "sub-text" });
@@ -127,6 +130,7 @@ function applyStatus(status) {
     }
   }
   lastVersion = status.version;
+  restartEl.hidden = !status.code_changed;
   showUnread(status.alerts_unread || 0);
   document.dispatchEvent(new CustomEvent("status", { detail: status }));
 }
@@ -291,7 +295,7 @@ function buildShell() {
     alertLink,
     buildRefresh(),
     buildTheme());
-  replace(document.getElementById("app"), h("div", { class: "shell" }, sidebar, h("div", { class: "main" }, topbar, bannerEl, contentEl)));
+  replace(document.getElementById("app"), h("div", { class: "shell" }, sidebar, h("div", { class: "main" }, topbar, restartEl, bannerEl, contentEl)));
 }
 
 async function boot() {

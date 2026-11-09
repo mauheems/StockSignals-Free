@@ -33,7 +33,8 @@ ROUTES = set(PAGES) | {"stock"}
 BAD_TEXT = re.compile(r"\b(undefined|NaN|null|\[object Object\]|Infinity)\b")
 LONG_DECIMAL = re.compile(r"\d\.\d{7,}")
 # Buttons that change saved state are exercised by their own scenarios, not the sweep.
-SKIP_SELECTOR = "[data-remove], [data-watch], [data-danger], #watch-toggle, #refresh-all, #theme-toggle, #create-alert, #drawer-create-alert, #stock-add-alert, [data-source], .search-item"
+EXTERNAL_SOURCES = ("https://kalshi.com/", "https://polymarket.com/")
+SKIP_SELECTOR = "[data-remove], [data-watch], [data-danger], #watch-toggle, #refresh-all, #theme-toggle, #create-alert, #drawer-create-alert, #stock-add-alert, #edit-signals, .row-handle, [data-keep-order], [data-source], .search-item"
 
 
 class Run:
@@ -158,9 +159,13 @@ class Run:
         )
         for name in blank:
             self.problem(f"blank chart {label}: {name}")
-        links = self.page.evaluate("() => [...document.querySelectorAll('a[href]')].map((a) => a.getAttribute('href'))")
-        for href in links:
-            if not href.startswith("#/"):
+        links = self.page.evaluate("() => [...document.querySelectorAll('a[href]')].map((a) => [a.getAttribute('href'), a.target, a.rel])")
+        for href, target, rel in links:
+            # The only outside links are to where prediction market odds come from, in a new tab.
+            if href.startswith(EXTERNAL_SOURCES):
+                if target != "_blank" or "noopener" not in rel:
+                    self.problem(f"outside link that doesn't open in a new tab: {href}")
+            elif not href.startswith("#/"):
                 self.problem(f"non-internal link: {href}")
             elif href[2:].split("/")[0] not in ROUTES:
                 self.problem(f"link to a page that doesn't exist: {href}")
@@ -320,6 +325,144 @@ def scenario_overview(run: Run) -> None:
         run.problem("index tile did not open the stock page")
 
 
+def scenario_key_signals(run: Run) -> None:
+    """Edit the Overview's Key signals: remove, reorder, add, reset. Restores the user's list."""
+    page = run.page
+    before = json.loads(page.evaluate("() => fetch('/api/overview').then((r) => r.text())"))
+    original, custom = before["signal_ids"], before["signals_custom"]
+    try:
+        run.visit("overview")
+        run.click("#edit-signals", "edit Key signals")
+        page.wait_for_selector(".edit-list .edit-row")
+        rows = lambda: page.evaluate("() => [...document.querySelectorAll('.edit-row')].map((row) => row.dataset.signal)")
+        start = rows()
+        run.click(page.locator(f"[data-remove-signal='{start[0]}']"), "remove a signal")
+        run.idle()
+        if start[0] in rows():
+            run.problem("removing a Key signal left it in the list")
+        run.click(page.locator(".edit-row").first.locator("button[aria-label^='Move'][aria-label$='down']"), "move a signal down")
+        run.idle()
+        if rows()[:2] != [start[2], start[1]]:
+            run.problem(f"moving down gave {rows()[:2]}")
+        # Drag the fourth row to the top (both on screen: a simulated drag doesn't scroll).
+        dragged = rows()[3]
+        page.locator(".edit-row").nth(3).drag_to(page.locator(".edit-row").first, target_position={"x": 40, "y": 3})
+        run.idle()
+        if rows()[0] != dragged:
+            run.problem(f"dragging the fourth row to the top gave {rows()[:3]}")
+        page.locator("#add-key-signal").select_option(start[0])
+        page.wait_for_function(f"() => [...document.querySelectorAll('.edit-row')].some((row) => row.dataset.signal === '{start[0]}')")
+        run.idle()
+        run.click("#done-signals", "finish editing")
+        run.settle()
+        saved = json.loads(page.evaluate("() => fetch('/api/overview').then((r) => r.text())"))
+        table = page.locator("#content table.data").first.locator("tbody tr").count()
+        if table != len([row for row in saved["signals"]]):
+            run.problem("the Key signals table does not match the saved list")
+        if saved["signal_ids"][0] != dragged or saved["signal_ids"][-1] != start[0]:
+            run.problem(f"the saved order is not what was arranged: {saved['signal_ids'][:3]}")
+        if SHOTS:
+            page.screenshot(path=f"{SHOTS}/key_signals.png")
+        run.click("#edit-signals", "edit again")
+        if SHOTS:
+            page.locator("#content .split-2-1").first.screenshot(path=f"{SHOTS}/key_signals_edit.png")
+        run.click("#reset-signals", "reset to default")
+        page.wait_for_timeout(1500)
+        run.idle()
+        reset = json.loads(page.evaluate("() => fetch('/api/overview').then((r) => r.text())"))
+        if reset["signals_custom"]:
+            run.problem("reset did not return to the default list")
+        run.click("#done-signals", "finish editing after reset")
+        run.check_page("after reset")
+    finally:
+        if custom:
+            page.evaluate("(ids) => fetch('/api/overview/signals', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) })", original)
+        else:
+            page.evaluate("() => fetch('/api/overview/signals', { method: 'DELETE' })")
+        page.wait_for_timeout(300)
+    after = json.loads(page.evaluate("() => fetch('/api/overview').then((r) => r.text())"))
+    if after["signal_ids"] != original or after["signals_custom"] != custom:
+        run.problem("the Key signals list was not restored after the test")
+
+
+def scenario_ordering(run: Run) -> None:
+    """Your own order for the watchlist and alerts: drag, keyboard, sort and keep. Restores both."""
+    page = run.page
+    get = lambda path: json.loads(page.evaluate(f"() => fetch('{path}').then((r) => r.text())"))
+    watch_before = [row["symbol"] for row in get("/api/watchlist")["rows"]]
+    alerts_before = [alert["id"] for alert in get("/api/alerts")["alerts"]]
+    shown = lambda: page.evaluate("() => [...document.querySelectorAll('#content [data-handle]')].map((el) => el.dataset.handle)")
+    try:
+        run.visit("watchlist")
+        page.wait_for_selector("#content [data-handle]")
+        page.evaluate("() => localStorage.removeItem('ms.table:watchlist')")
+        run.visit("overview")
+        run.visit("watchlist")
+        page.wait_for_selector("#content [data-handle]")
+        # Outside market hours an extra price column arrives a moment later and shifts the rest.
+        run.idle()
+        start = shown()
+        if start != watch_before:
+            run.problem(f"watchlist on screen {start[:3]} is not in the saved order {watch_before[:3]}")
+        # Drag the third stock to the top.
+        page.locator(f"[data-handle='{start[2]}']").drag_to(page.locator("#content tbody tr").first, target_position={"x": 60, "y": 3})
+        run.idle()
+        if shown()[0] != start[2] or get("/api/watchlist")["rows"][0]["symbol"] != start[2]:
+            run.problem(f"dragging a stock to the top gave {shown()[:3]}")
+        # Keyboard: move the top stock down one place.
+        page.locator(f"[data-handle='{start[2]}']").focus()
+        page.keyboard.press("ArrowDown")
+        run.idle()
+        if shown()[1] != start[2]:
+            run.problem(f"the down arrow key did not move the stock: {shown()[:3]}")
+        if page.evaluate("() => document.activeElement?.dataset.handle") != start[2]:
+            run.problem("keyboard focus did not follow the moved stock")
+        # Sort by a column, then keep that as your order.
+        # A click event on the header itself: the middle of a short title is its info button,
+        # and columns can shift while prices outside market hours arrive.
+        # (A plain text match would also find "Ext. hours" + its "i" button: "hoursi".)
+        page.locator("#content th").filter(has_text=re.compile(r"^RSI")).first.dispatch_event("click")
+        run.idle()
+        tools = page.locator("#content .table-tools").inner_text()
+        if "Sorted by RSI" not in tools:
+            run.problem(f"sorting does not say what it is sorted by: {tools!r}")
+        sorted_view = shown()
+        run.click(page.locator("[data-keep-order]"), "keep the sorted order")
+        run.idle()
+        if [row["symbol"] for row in get("/api/watchlist")["rows"]] != sorted_view:
+            run.problem("'Keep this order' did not save the sorted order")
+        # The third click on a header returns to your own order.
+        for _ in range(3):
+            page.locator("#content th:has-text('1 week')").first.dispatch_event("click")
+        if shown() != sorted_view:
+            run.problem("the third header click did not return to your own order")
+        # The order survives a reload.
+        page.reload()
+        page.wait_for_selector("#content [data-handle]")
+        if shown() != sorted_view:
+            run.problem("your watchlist order was lost after reloading")
+        if SHOTS:
+            page.screenshot(path=f"{SHOTS}/ordering_watchlist.png")
+        if len(alerts_before) >= 2:
+            run.visit("alerts")
+            page.wait_for_selector("#content [data-handle]")
+            first = shown()[0]
+            page.locator(f"[data-handle='{first}']").focus()
+            page.keyboard.press("ArrowDown")
+            run.idle()
+            saved = [alert["id"] for alert in get("/api/alerts")["alerts"]]
+            if str(saved[1]) != first:
+                run.problem(f"moving an alert down was not saved: {saved}")
+    finally:
+        page.evaluate("(symbols) => fetch('/api/watchlist/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbols }) })", watch_before)
+        page.evaluate("(ids) => fetch('/api/alerts/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) })", alerts_before)
+        page.wait_for_timeout(300)
+    if [row["symbol"] for row in get("/api/watchlist")["rows"]] != watch_before:
+        run.problem("the watchlist order was not restored after the test")
+    if [alert["id"] for alert in get("/api/alerts")["alerts"]] != alerts_before:
+        run.problem("the alert order was not restored after the test")
+
+
 def scenario_rotation(run: Run) -> None:
     run.visit("rotation")
     page = run.page
@@ -413,13 +556,23 @@ def scenario_watchlist(run: Run) -> None:
     if "#/stock/" not in page.url:
         run.problem("selecting a watchlist row did not open the stock page")
     after = json.loads(page.evaluate("() => fetch('/api/watchlist').then((r) => r.text())"))
-    if {row["symbol"] for row in after["rows"]} != symbols:
-        run.problem("watchlist was not restored after add and remove")
+    if [row["symbol"] for row in after["rows"]] != [row["symbol"] for row in before["rows"]]:
+        run.problem("watchlist was not restored, in the same order, after add and remove")
+
+
+def restore_watchlist_order(page: Page, symbols: list[str]) -> None:
+    """Re-adding a stock puts it at the end, so tests that do that put the order back."""
+    page.evaluate("(symbols) => fetch('/api/watchlist/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbols }) })", symbols)
+
+
+def watchlist_order(page: Page) -> list[str]:
+    return [row["symbol"] for row in json.loads(page.evaluate("() => fetch('/api/watchlist').then((r) => r.text())"))["rows"]]
 
 
 def scenario_scanner(run: Run) -> None:
     run.visit("scanner")
     page = run.page
+    order = watchlist_order(page)
     page.wait_for_selector("#content table.data tbody tr", timeout=60000)
     scan = page.locator("select[aria-label='Scan']")
     for value in scan.evaluate("(el) => [...el.options].map((o) => o.value)"):
@@ -443,17 +596,21 @@ def scenario_scanner(run: Run) -> None:
     page.wait_for_timeout(300)
     search.fill("")
     page.wait_for_timeout(150)
+    restore_watchlist_order(page, order)
     run.ok()
 
 
 def scenario_stock(run: Run) -> None:
     run.visit("stock/AAPL")
     page = run.page
+    order = watchlist_order(page)
     page.wait_for_selector("text=Valuation", timeout=60000)
     run.settle()
     run.check_page("stock AAPL")
     run.click("#watch-toggle", "remove from watchlist")
     run.click("#watch-toggle", "add back to watchlist")
+    run.idle()
+    restore_watchlist_order(page, order)
     for label, part in (("Open in Chart Lab", "#/chart/"), ("Backtest this", "#/backtest/"), ("Full gamma view", "#/options/")):
         run.visit("stock/AAPL")
         page.wait_for_selector(f"a:has-text('{label}')", timeout=60000)
@@ -499,6 +656,14 @@ def scenario_chart(run: Run) -> None:
             run.check_page(f"{interval} range {position}")
     page.locator("[aria-label='Date range'] button:has-text('1Y')").click()
     run.settle()
+    # Price as a line, then back to candles.
+    run.click(page.locator("[aria-label='Price style'] button:has-text('Line')"), "price as a line")
+    run.check_page("price as a line")
+    if "closing price" not in page.locator(".lab-chart-note").inner_text():
+        run.problem("the chart note still describes candles in line mode")
+    if SHOTS:
+        page.screenshot(path=f"{SHOTS}/chart_line.png", full_page=True)
+    run.click(page.locator("[aria-label='Price style'] button:has-text('Candles')"), "price as candles")
     # Signals: add several, including one that can go negative, and a comparison ticker.
     signal_select = page.locator("select[aria-label='Add a signal']")
     for value in ("vix", "pct_above_50", "mcclellan", "dix", "pc_equity_10d"):
@@ -702,9 +867,10 @@ def scenario_alerts(run: Run) -> None:
     page.locator("#alert-measure").select_option("close")
     page.locator("#alert-op").select_option("above")
     page.locator("#alert-value").fill("1")
-    run.idle()
-    if "Now $" not in page.locator(".rule-hint").inner_text():
-        run.problem("alert form shows no current value")
+    try:
+        page.wait_for_function("() => (document.querySelector('#content .rule-hint')?.textContent || '').startsWith('Now $')", timeout=15000)
+    except Exception:
+        run.problem(f"alert form shows no current value: {page.locator('#content .rule-hint').inner_text()!r}")
     run.click("#create-alert", "create a stock alert")
     run.settle()
     if "SPY price is above $1.00" not in page.locator("#content").inner_text():
@@ -873,9 +1039,55 @@ def scenario_extended(run: Run) -> None:
     run.settle(200)
     run.click(page.locator(".segmented button:has-text('Daily')"), "back to daily")
     run.settle(200)
-    if page.locator(".lab-panel label:has-text('Pre-market and after hours')").count():
-        run.problem("daily chart still offers the extended-hours toggle")
+    # Daily charts mark the latest price outside regular hours with a dashed line.
+    try:
+        page.wait_for_function("() => (document.querySelector('figure .card-sub')?.textContent || '').includes('the dashed line')", timeout=20000)
+    except Exception:
+        run.problem("the daily chart does not mention the pre-market or after-hours price")
+    if SHOTS:
+        page.screenshot(path=f"{SHOTS}/ext_chart_daily.png")
+    # The options page shows the move of the index's future next to the spot price.
+    run.visit("options/SPX")
+    try:
+        page.wait_for_selector("text=S&P 500 futures", timeout=30000)
+    except Exception:
+        run.problem("the SPX options page does not show the S&P 500 futures move")
+    # Rotation adds a column for the funds' moves outside regular hours.
+    run.visit("rotation")
+    try:
+        page.wait_for_selector("#content th:has-text('Ext. hours')", timeout=30000)
+    except Exception:
+        run.problem("rotation has no extended-hours column outside market hours")
     run.ok()
+
+
+def scenario_prediction(run: Run) -> None:
+    """Prediction market odds on the Macro page, the Overview and stock pages."""
+    page = run.page
+    run.visit("macro")
+    try:
+        page.wait_for_selector("#content .odds-row", timeout=60000)
+    except Exception:
+        run.problem("the Macro page shows no Fed decision odds")
+        return
+    rows = page.locator("#content .odds-row")
+    total = sum(int(rows.nth(index).locator(".odds-value").inner_text().rstrip("%")) for index in range(rows.count()))
+    if not 97 <= total <= 103:
+        run.problem(f"Fed decision odds add up to {total}%")
+    run.check_page("macro with prediction markets")
+    if SHOTS:
+        page.locator("#content").screenshot(path=f"{SHOTS}/prediction_macro.png")
+    board = json.loads(page.evaluate("() => fetch('/api/macro').then((r) => r.text())"))["prediction"]["board"]
+    if "fed" not in board:
+        run.problem("no Fed odds in the macro data")
+    run.visit("overview")
+    catalysts = json.loads(page.evaluate("() => fetch('/api/overview').then((r) => r.text())"))["catalysts"]
+    if any(event.get("odds") for event in catalysts):
+        more = page.locator("#content section:has-text('Next catalysts') button:has-text('Show all')")
+        if more.count():
+            run.click(more.first, "show all catalysts")
+        if page.locator("#content .odds-note").count() == 0:
+            run.problem("Next catalysts show no prediction market odds")
 
 
 def scenario_sources(run: Run) -> None:
@@ -923,9 +1135,9 @@ def main() -> int:
                 page.screenshot(path=f"{SHOTS}/{name}.png", full_page=True)
 
         scenarios = [
-            scenario_shell, scenario_overview, scenario_rotation, scenario_options, scenario_watchlist,
-            scenario_scanner, scenario_stock, scenario_chart, scenario_backtest, scenario_study,
-            scenario_guide, scenario_alerts, scenario_drawer, scenario_extended, scenario_sources,
+            scenario_shell, scenario_overview, scenario_key_signals, scenario_rotation, scenario_options, scenario_watchlist,
+            scenario_ordering, scenario_scanner, scenario_stock, scenario_chart, scenario_backtest, scenario_study,
+            scenario_guide, scenario_alerts, scenario_drawer, scenario_extended, scenario_prediction, scenario_sources,
         ]
         for scenario in scenarios:
             name = scenario.__name__.removeprefix("scenario_")

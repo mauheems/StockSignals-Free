@@ -20,6 +20,7 @@ GUIDE_CATEGORIES = [
     {"id": "options", "label": "Options & gamma"},
     {"id": "flows", "label": "Flows & sentiment"},
     {"id": "macro", "label": "Credit & macro"},
+    {"id": "prediction", "label": "Prediction markets"},
     {"id": "technical", "label": "Momentum & volume"},
     {"id": "stock", "label": "Company fundamentals"},
     {"id": "research", "label": "Backtests & studies"},
@@ -28,6 +29,9 @@ GUIDE_CATEGORIES = [
 ]
 
 YAHOO = "Yahoo Finance, about 15 minutes delayed for US stocks and ETFs"
+KALSHI = "Kalshi public market data (no account), checked every hour"
+POLYMARKET = "Polymarket public market data (no account), checked every hour"
+BETTING = "Prices of contracts that pay $1 if something happens, so a price of $0.70 means about 70%. Traders can be wrong, and thinly traded markets can be moved by a few bets; check the amount traded before leaning on a number."
 CBOE_CHAIN = "Cboe delayed option chains, about 15 minutes delayed, no key needed"
 CBOE_STATS = "Cboe daily market statistics, published after the close"
 FRED = "FRED, the St. Louis Fed's public data service"
@@ -1280,12 +1284,84 @@ METRICS: dict[str, dict] = {
         "From the Options & Gamma calculations for the underlying.",
         CBOE_CHAIN, NAIVE_GAMMA,
     ),
+    "price_style": _m(
+        "Candles or line", "technical",
+        "How Chart Lab draws the price. A candle shows each bar's open, high, low and close. A line connects the closing prices only.",
+        "Candles show how much a price moved within each bar and where it closed in that range: a long wick means a level was tested and rejected. A line is calmer to read over long ranges and makes trends and overlays easier to see.",
+        "Candle: the body runs from open to close, hollow blue if it closed up, solid red if down, with thin wicks to the high and low. Line: the close of every bar.",
+        YAHOO,
+    ),
     "earnings_marks": _m(
         "Earnings dates on chart", "stock",
         "Marks past and next earnings reports on the price chart.",
         "Lets you see how the stock has reacted to earnings in the past.",
         "Dates of the last 12 reports and the next expected one.",
         "Yahoo Finance earnings data",
+    ),
+    # ------------------------------------------------------------ prediction markets
+    "prediction_markets": _m(
+        "Prediction markets", "prediction",
+        "Exchanges such as Kalshi and Polymarket where people trade contracts on real-world outcomes: the next Fed decision, a recession, the next inflation number, whether a company beats its earnings estimate.",
+        "Read the price as the crowd's odds, with money behind them. They react within minutes to news, often faster than surveys or economists. They are most useful where a lot is traded (the Fed, recessions) and least where little is (single-company earnings).",
+        "Each probability is the midpoint between the best buy and sell price, or the last trade when that gap is wide. Odds across all outcomes of one question are scaled to add up to 100%.",
+        f"{KALSHI}; {POLYMARKET}",
+        BETTING,
+    ),
+    "fed_odds": _m(
+        "Fed decision odds", "prediction",
+        "The market's odds for each possible outcome of the next Fed meeting: a cut, no change, or a hike, and by how much.",
+        "Stocks often move when these odds shift, not on the day itself. A surprise against what the market priced in, such as a hike when 80% expected a hold, tends to cause the biggest moves.",
+        "Kalshi's Fed decision markets for the next scheduled meeting, using each outcome's midpoint price, scaled to add up to 100%.",
+        KALSHI, BETTING,
+    ),
+    "pm_fed_hike": _m(
+        "Fed hike odds, next meeting", "prediction",
+        "Chance that the Fed raises its rate at its next meeting, by any amount.",
+        "Rising hike odds mean tighter money ahead, usually a headwind for stocks and especially for growth and small caps. When one meeting passes, this follows the next one, so watch for jumps on meeting days.",
+        "Sum of the 'hike 25bps' and 'hike more than 25bps' odds in Kalshi's Fed decision markets for the next meeting. Earlier days come from the price history of that meeting's markets.",
+        KALSHI, BETTING,
+    ),
+    "pm_fed_cut": _m(
+        "Fed cut odds, next meeting", "prediction",
+        "Chance that the Fed lowers its rate at its next meeting, by any amount.",
+        "Cuts make money cheaper, which usually helps stocks. But cut odds that jump because the economy is weakening are not good news: look at why they are moving.",
+        "Sum of the 'cut 25bps' and 'cut more than 25bps' odds in Kalshi's Fed decision markets for the next meeting.",
+        KALSHI, BETTING,
+    ),
+    "pm_recession": _m(
+        "Recession odds, next year", "prediction",
+        "Chance that a US recession starts next calendar year, as later dated by the NBER, the official referee of US recessions.",
+        "Under about 20% is the usual background. Odds climbing past 35 to 40% have tended to come with falling stocks and widening credit spreads. Compare with the Sahm rule and credit spreads on this page.",
+        "Kalshi's recession market for the coming year: its midpoint price, and its daily closing price for the history.",
+        KALSHI, BETTING + " The NBER announces recessions months after they start, so these markets settle slowly.",
+    ),
+    "pm_cpi": _m(
+        "Expected CPI inflation, next report", "prediction",
+        "The market's middle estimate for the next year-over-year CPI inflation number, before it is published.",
+        "Compare it with the latest actual reading (CPI inflation on this page). The surprise against this estimate on release day is what moves markets, rather than the number itself.",
+        "Kalshi lists contracts on CPI coming in above each level. The middle estimate is the level with a 50% chance of being beaten, interpolated between listed levels. The likely range runs from a 90% to a 10% chance.",
+        KALSHI, BETTING,
+    ),
+    "pm_unemployment": _m(
+        "Expected unemployment rate, next report", "prediction",
+        "The market's middle estimate for the unemployment rate in the next jobs report.",
+        "A rising estimate means traders see the job market weakening. Compare with the latest unemployment rate and the Sahm rule on this page.",
+        "Kalshi's contracts on the unemployment rate coming in above each level; the middle estimate is where the chance crosses 50%.",
+        KALSHI, BETTING,
+    ),
+    "pm_payrolls": _m(
+        "Expected payrolls, next report", "prediction",
+        "The market's middle estimate for the change in US jobs (nonfarm payrolls) in the next jobs report.",
+        "A number well below the estimate tends to push yields and the dollar down. Little is traded here, so read it as a rough guide.",
+        "Kalshi's contracts on payrolls coming in above each level; the middle estimate is where the chance crosses 50%.",
+        KALSHI, BETTING,
+    ),
+    "earnings_odds": _m(
+        "Earnings beat odds", "prediction",
+        "Polymarket's odds that a company reports earnings per share above the analysts' consensus estimate in its next report.",
+        "Most companies beat the consensus, so 70 to 80% is ordinary; low odds are the unusual signal. Beating is not the same as the stock rising: expectations are often already in the price. These markets are often small, so always check the amount traded.",
+        "The Yes price of Polymarket's 'Will X beat quarterly earnings?' market (bid-ask midpoint when the gap is narrow). The estimate it is measured against is the consensus at the time the market opened.",
+        POLYMARKET, BETTING,
     ),
     # ------------------------------------------------------- pre-market & after hours
     "extended_hours": _m(

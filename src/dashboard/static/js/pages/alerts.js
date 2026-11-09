@@ -144,7 +144,21 @@ export default {
       ];
       replace(listBox,
         h("h3", { class: "card-title", style: { marginBottom: "6px" } }, `Your alerts${data.alerts.length ? ` (${data.alerts.length})` : ""}`),
-        dataTable({ columns, rows: data.alerts, empty: "No alerts yet. Create one above, or start from an example." }));
+        dataTable({
+          id: "alerts",
+          columns,
+          rows: data.alerts,
+          rowKey: (alert) => alert.id,
+          itemName: "alert",
+          reorder: (ids) => {
+            data.alerts = ids.map((alertId) => data.alerts.find((alert) => alert.id === alertId)).filter(Boolean);
+            api.post("/api/alerts/order", { ids }).catch((error) => {
+              toast(error.message, "error");
+              load();
+            });
+          },
+          empty: "No alerts yet. Create one above, or start from an example.",
+        }));
     };
 
     async function load() {

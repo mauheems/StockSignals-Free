@@ -50,7 +50,7 @@ export default {
         signalTile(rows.move));
       replace(tableBox,
         h("h3", { class: "card-title", style: { marginBottom: "6px" } }, "Volatility across assets"),
-        dataTable({ columns: TABLE_COLUMNS, rows: data.table, empty: "Volatility indices are still loading." }));
+        dataTable({ id: "volatility", columns: TABLE_COLUMNS, rows: data.table, empty: "Volatility indices are still loading." }));
 
       const curve = data.term_structure;
       cards.term.render(categoryLines({

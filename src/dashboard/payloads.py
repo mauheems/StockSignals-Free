@@ -136,6 +136,26 @@ def _quote_tile(ctx: Ctx, symbol: str, label: str, metric: str, fmt: str, higher
     }
 
 
+def _near(day: str, other: str | None, days: int = 2) -> bool:
+    return bool(other) and abs((dt.date.fromisoformat(day) - dt.date.fromisoformat(other)).days) <= days
+
+
+def _odds_note(event: dict, board: dict, earnings: dict) -> dict | None:
+    """What prediction markets expect for a calendar event, when they trade on it."""
+    label = event["label"]
+    if label.startswith("FOMC") and board.get("fed") and _near(event["date"], board["fed"]["date"]):
+        fed = board["fed"]
+        return {"text": f"{fed['likely']} {round(fed['likely_prob'] * 100)}%", "metric": "fed_odds"}
+    if label.startswith("CPI") and board.get("cpi") and _near(event["date"], board["cpi"]["release"]):
+        return {"text": f"expected {board['cpi']['median']:.1f}%", "metric": "pm_cpi"}
+    if label.startswith("Jobs report") and board.get("unemployment") and _near(event["date"], board["unemployment"]["release"]):
+        return {"text": f"unemployment expected {board['unemployment']['median']:.1f}%", "metric": "pm_unemployment"}
+    odds = earnings.get(event.get("symbol") or "")
+    if event.get("kind") == "earnings" and odds and _near(event["date"], odds["date"], 7):
+        return {"text": f"{round(odds['prob'] * 100)}% beat odds", "metric": "earnings_odds"}
+    return None
+
+
 def _catalysts(store: Store, limit: int = 12) -> list[dict]:
     today = now_et().date()
     events = list(store.kv_get("events:macro", []))
@@ -144,6 +164,12 @@ def _catalysts(store: Store, limit: int = 12) -> list[dict]:
         details = store.kv_get(f"fund:{symbol}")
         if details and details.get("next_earnings"):
             events.append({"date": details["next_earnings"], "label": f"{symbol} earnings", "kind": "earnings", "metric": "next_earnings", "symbol": symbol})
+    board = store.kv_get("pm:board") or {}
+    earnings = store.kv_get("pm:earnings") or {}
+    for event in events:
+        note = _odds_note(event, board, earnings)
+        if note:
+            event["odds"] = note
     upcoming = [event for event in events if event["date"] >= today.isoformat()]
     upcoming.sort(key=lambda item: item["date"])
     for event in upcoming:
@@ -168,9 +194,40 @@ OVERVIEW_SIGNALS = [
     "vix", "vix_term", "vrp", "spx_net_gex", "sm_gex", "dix", "pc_equity_10d",
     "hy_oas", "t10y3m", "nfci", "xly_xlp", "iwm_spy", "smh_spy", "soxx", "fear_greed", "aaii_spread",
 ]
+OVERVIEW_SIGNALS_KEY = "overview:signals"
+MAX_OVERVIEW_SIGNALS = 60
+
+
+def overview_signal_ids(store: Store) -> list[str]:
+    """The Key signals the user chose for the Overview, in their order, or the default list."""
+    saved = store.kv_get(OVERVIEW_SIGNALS_KEY)
+    if isinstance(saved, list):
+        # Signals can be renamed or retired in a later version; skip ids that no longer exist.
+        return [item for item in saved if item in sig.REGISTRY]
+    return list(OVERVIEW_SIGNALS)
+
+
+def set_overview_signals(store: Store, ids) -> list[str]:
+    """Save the user's Key signals. Raises ValueError with a readable message."""
+    if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
+        raise ValueError("Send the Key signals as a list of signal ids.")
+    unknown = [item for item in ids if item not in sig.REGISTRY]
+    if unknown:
+        raise ValueError(f"Unknown signal: {', '.join(unknown[:3])}.")
+    chosen = list(dict.fromkeys(ids))
+    if len(chosen) > MAX_OVERVIEW_SIGNALS:
+        raise ValueError(f"Up to {MAX_OVERVIEW_SIGNALS} Key signals keeps the Overview readable.")
+    store.kv_set(OVERVIEW_SIGNALS_KEY, chosen)
+    return chosen
+
+
+def reset_overview_signals(store: Store) -> list[str]:
+    store.kv_delete(OVERVIEW_SIGNALS_KEY)
+    return list(OVERVIEW_SIGNALS)
 
 
 def overview(store: Store, ctx: Ctx) -> dict:
+    signal_ids = overview_signal_ids(store)
     history = sig.pillar_history(ctx, lagged=False)
     latest = history.dropna(how="all").iloc[-1] if not history.dropna(how="all").empty else pd.Series(dtype=float)
 
@@ -258,7 +315,9 @@ def overview(store: Store, ctx: Ctx) -> dict:
         "pillars": pillars,
         "crowd": crowd,
         "tiles": [tile for tile in tiles if tile],
-        "signals": [row for row in _rows(ctx, OVERVIEW_SIGNALS).values() if row],
+        "signals": [row for row in _rows(ctx, signal_ids).values() if row],
+        "signal_ids": signal_ids,
+        "signals_custom": store.kv_get(OVERVIEW_SIGNALS_KEY) is not None,
         "flips": sig.recent_flips(ctx),
         "catalysts": _catalysts(store),
         "sectors": sectors,
@@ -518,9 +577,15 @@ def macro(ctx: Ctx, range_key: str) -> dict:
         "breakeven10y", "fed_funds", "dxy", "oil", "gold", "copper", "copper_gold", "net_liquidity", "claims", "unrate",
         "sahm", "cpi_yoy", "core_cpi_yoy", "core_pce_yoy", "hyg_ief",
     ]
+    board = ctx.store.kv_get("pm:board") or {}
     return {
         "market": market_state(),
         "rows": _rows(ctx, ids),
+        "prediction": {
+            "board": board,
+            "rows": _rows(ctx, ["pm_fed_hike", "pm_fed_cut", "pm_recession", "pm_cpi", "pm_unemployment"]),
+            "history": table_payload({"hike": ctx.signal("pm_fed_hike"), "cut": ctx.signal("pm_fed_cut"), "recession": ctx.signal("pm_recession")}, "1y", digits=1),
+        },
         "curve": {"today": _curve_on(ctx, 0), "month_ago": _curve_on(ctx, 30), "year_ago": _curve_on(ctx, 365)},
         "charts": {
             "yields": table_payload({"y10": ctx.signal("dgs10"), "y2": ctx.signal("dgs2"), "ff": ctx.signal("fed_funds")}, range_key, digits=2),
@@ -643,6 +708,7 @@ def stock_page(store: Store, ctx: Ctx, symbol: str) -> dict:
         "chips": chips,
         "options": store.kv_get(f"opt:summary:{underlying}"),
         "option_underlying": underlying,
+        "earnings_odds": (store.kv_get("pm:earnings") or {}).get(target),
         "dark_pool": stock_analytics.dark_pool_summary(store.get_short_volume(target)),
     }
 
@@ -672,6 +738,7 @@ def stock_options_summary(store: Store, symbol: str) -> dict:
 def watchlist_rows(store: Store, ctx: Ctx) -> list[dict]:
     rows = []
     benchmark = _benchmark(ctx)
+    earnings_odds = store.kv_get("pm:earnings") or {}
     for symbol in store.watchlist():
         frame = store.get_prices(symbol)
         if frame.empty:
@@ -685,9 +752,11 @@ def watchlist_rows(store: Store, ctx: Ctx) -> list[dict]:
         info = details.get("info") or {}
         option = store.kv_get(f"opt:summary:{cboe.option_symbol(symbol)}") or {}
         dark_pool = stock_analytics.dark_pool_summary(store.get_short_volume(symbol))
+        odds = earnings_odds.get(symbol)
         rows.append({
             "symbol": symbol,
             "name": _symbol_name(store, symbol),
+            "earnings_beat": odds["prob"] if odds else None,
             "last": snapshot.get("last"),
             "change_pct": snapshot.get("change_pct"),
             "ret_5d": snapshot.get("ret_5d"),

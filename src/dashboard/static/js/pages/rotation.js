@@ -3,6 +3,7 @@ import { api, query } from "../lib/api.js";
 import { baseOption, chartCard, colors, lineChart, tooltipRows } from "../lib/charts.js";
 import { MISSING, fmt, fmtDate, h, prefs, replace } from "../lib/dom.js";
 import { info } from "../lib/guide.js";
+import { extendedCell } from "./watchlist.js";
 import { dataTable, deltaSpan, field, fillSelect, filters, heatCell, pageHead, segmented, select, sparkline, statusBadge, symbolLink, tile } from "../lib/ui.js";
 
 const QUADRANT_TONE = { Leading: "good", Weakening: "warning", Lagging: "critical", Improving: "info" };
@@ -213,6 +214,7 @@ export default {
     const state = { ...{ universe: "sectors", benchmark: "SPY", lens: "weekly", tail: 4, mode: "relative" }, ...prefs.get("rotation", {}) };
     let data = null;
     let highlighted = null;
+    let quotes = {};
 
     const mapCard = chartCard({ title: "Rotation map", metric: "rotation_map", height: 540 });
     const quadrantBox = h("section", { class: "card quad-card" });
@@ -275,6 +277,28 @@ export default {
           : h("span", { class: "sub-text" }, "None right now")))));
     };
 
+    // Outside regular hours, an extra column with each fund's pre-market or after-hours move.
+    const withExtended = (columns) => {
+      if (!data.table.some((row) => quotes[row.symbol])) return columns;
+      const column = {
+        key: "extended", label: "Ext. hours", metric: "extended_hours",
+        value: (row) => quotes[row.symbol]?.change_pct ?? null,
+        render: (row) => extendedCell(quotes[row.symbol]),
+      };
+      return [columns[0], column, ...columns.slice(1)];
+    };
+
+    const loadExtended = async () => {
+      if (!data) return;
+      const symbols = data.table.map((row) => row.symbol);
+      try {
+        quotes = (await api.get(`/api/extended${query({ symbols: symbols.join(",") })}`)).quotes;
+      } catch {
+        quotes = {};
+      }
+      drawPerformance();
+    };
+
     const drawPerformance = () => {
       replace(performanceBox,
         h("div", { class: "card-head" },
@@ -285,7 +309,8 @@ export default {
             drawPerformance();
           }, "Performance mode")),
         dataTable({
-          columns: performanceColumns(state.mode, data.benchmark),
+          id: `rotation-${state.mode}`,
+          columns: withExtended(performanceColumns(state.mode, data.benchmark)),
           rows: data.table,
           rowKey: (row) => row.symbol,
           selectedKey: highlighted,
@@ -329,7 +354,7 @@ export default {
 
     function changed() {
       prefs.set("rotation", state);
-      load().catch((error) => console.warn(error));
+      load().then(loadExtended).catch((error) => console.warn(error));
     }
 
     replace(root,
@@ -355,6 +380,8 @@ export default {
       h("div", { class: "mt" }, ratiosBox));
 
     await load();
-    return { refresh: load };
+    loadExtended();
+    const extendedTimer = setInterval(loadExtended, 3 * 60 * 1000);
+    return { refresh: () => load().then(loadExtended), unmount: () => clearInterval(extendedTimer) };
   },
 };

@@ -268,14 +268,30 @@ function ivRank(history) {
   return { rank: high > low ? ((values[values.length - 1] - low) / (high - low)) * 100 : null, count: values.length };
 }
 
-function kpiTiles(data) {
+// Indices have no pre-market of their own; their futures show where they are heading.
+const EXTENDED_PROXY = { SPX: ["ES=F", "S&P 500 futures"], XSP: ["ES=F", "S&P 500 futures"], NDX: ["NQ=F", "Nasdaq 100 futures"], RUT: ["RTY=F", "Russell 2000 futures"], DJX: ["YM=F", "Dow futures"] };
+
+function extendedSymbol(symbol) {
+  return EXTENDED_PROXY[symbol]?.[0] || (symbol === "VIX" ? null : symbol);
+}
+
+function spotDelta(symbol, quote) {
+  if (!quote) return null;
+  const proxy = EXTENDED_PROXY[symbol];
+  const text = proxy
+    ? `${proxy[1]} ${fmt(quote.change_pct, "spct2")} since the close`
+    : `${quote.label} ${fmt(quote.price, "num2")} (${fmt(quote.change_pct, "spct2")})`;
+  return h("span", { title: `At ${quote.when}` }, text, info(proxy ? "index_futures" : "extended_hours"));
+}
+
+function kpiTiles(data, quote = null) {
   const k = data.kpis;
   const rank = ivRank(data.history);
   const positive = k.gamma_regime === "positive";
   const money = (value) => (value === null || value === undefined ? MISSING : fmt(value, "usdcompact"));
   const expiry = (iso) => (iso ? `Expiry ${fmtDate(iso)}` : "");
   return [
-    tile({ label: "Spot", metric: "spot", value: k.spot, fmtCode: "num2", foot: h("span", {}, data.source_time ? `Last update ${fmtDate(data.source_time)} ${data.source_time.slice(11, 16)} ET` : "") }),
+    tile({ label: "Spot", metric: "spot", value: k.spot, fmtCode: "num2", delta: spotDelta(data.symbol, quote), foot: h("span", {}, data.source_time ? `Last update ${fmtDate(data.source_time)} ${data.source_time.slice(11, 16)} ET` : "") }),
     tile({ label: "Net dealer gamma", metric: "net_gex", valueText: money(k.net_gex), foot: h("span", {}, "per 1% move") }),
     tile({ label: "Gamma regime", metric: "gamma_regime", valueText: positive ? "Positive" : "Negative", foot: statusBadge(positive ? "good" : "critical", positive ? "Moves tend to be damped" : "Moves can be amplified") }),
     tile({ label: "Gamma flip", metric: "gamma_flip", value: k.gamma_flip, fmtCode: "num0", foot: h("span", {}, k.gamma_flip ? `Spot ${fmt(k.flip_distance_pct, "spct1")} vs flip` : "No crossing within 20%") }),
@@ -417,6 +433,7 @@ export default {
         h("span", { class: "sub-text" }, `Chain fetched ${fmtAgo(data.fetched_at)}`),
         h("a", { class: "btn btn-xs", href: `#/chart/${encodeURIComponent(data.symbol === "SPX" ? "^GSPC" : data.symbol)}` }, "Open in Chart Lab"));
       replace(tilesBox, kpiTiles(data));
+      loadExtended(data);
       fillScopeOptions();
       drawStrike();
       profileCard.render(profileChart(data));
@@ -434,8 +451,21 @@ export default {
       replace(unusualBox,
         h("h3", { class: "card-title", style: { marginBottom: "4px" } }, `${data.symbol} options trading far above their open interest`, info("unusual_activity")),
         h("p", { class: "card-sub", style: { marginBottom: "6px" } }, `${data.name}. Sorted by dollars traded. The data doesn't reveal whether these were bought or sold. Pick another underlying above to see its contracts.`),
-        dataTable({ columns: unusualColumns(data.symbol), rows: data.unusual, maxHeight: 380, empty: "No unusual activity in this scope." }));
+        dataTable({ id: "options-unusual", columns: unusualColumns(data.symbol), rows: data.unusual, maxHeight: 380, empty: "No unusual activity in this scope." }));
     };
+
+    // Outside regular hours, the underlying's latest price (or its index future's move).
+    async function loadExtended(shown) {
+      const symbol = extendedSymbol(shown.symbol);
+      if (!symbol) return;
+      try {
+        const result = await api.get(`/api/extended${query({ symbols: symbol })}`);
+        const quote = result.quotes[symbol];
+        if (quote && data === shown) replace(tilesBox, kpiTiles(shown, quote));
+      } catch {
+        /* the spot tile simply shows the regular price */
+      }
+    }
 
     function fillScopeOptions() {
       const dated = (data.expiries || []).slice(0, 30).map((row) => ({

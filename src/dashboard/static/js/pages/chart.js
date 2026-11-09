@@ -36,7 +36,8 @@ const MARKS = [
   { id: "gamma", label: "Gamma levels", metric: "gamma_levels" },
   { id: "earnings", label: "Earnings dates", metric: "earnings_marks", dailyOnly: true },
   // Changes which bars are loaded, so toggling it fetches new data instead of only redrawing.
-  { id: "extended", label: "Pre-market and after hours", metric: "extended_hours", intradayOnly: true, reload: true },
+  // Intraday: the extra bars themselves. Daily and weekly: a line at the latest price outside regular hours.
+  { id: "extended", label: "Pre-market and after hours", metric: "extended_hours", reload: true },
 ];
 const SESSION_NAMES = { pre: "Pre-market", post: "After hours" };
 const PANES = [
@@ -67,7 +68,9 @@ const DEFAULTS = {
   panes: { volume: true },
   signals: [],
   shades: [],
+  style: "candles",
 };
+const PRICE_STYLES = [{ value: "candles", label: "Candles" }, { value: "line", label: "Line" }];
 
 function mean(values) {
   const clean = values.filter((value) => value !== null && value !== undefined);
@@ -118,6 +121,7 @@ export default {
     let aligned = { signals: {} };
     let levels = null;
     let earnings = null;
+    let extendedQuote = null;
     let handle = null;
     let loadId = 0;
     let showingTable = false;
@@ -145,10 +149,11 @@ export default {
         else handle?.chart.resize();
       },
     }, "Table");
+    const chartNote = h("p", { class: "lab-chart-note" });
     const chartCardEl = h("figure", { class: "card chart-card" },
       h("div", { class: "card-head" }, h("div", {}, titleBox, subBox), h("div", { class: "card-actions" }, tableToggle)),
       noticeBox, canvas, tableBox,
-      h("p", { class: "lab-chart-note" }, "Hollow blue candles closed up, solid red candles closed down. Drag or scroll on the chart to zoom. On-price modes rescale everything to share one axis, and the tooltip always shows true values."));
+      chartNote);
 
     const symbolInput = h("input", {
       class: "input",
@@ -350,6 +355,7 @@ export default {
         if (symbolChanged) {
           levels = null;
           earnings = null;
+          extendedQuote = null;
         }
         save();
         drawRange();
@@ -359,6 +365,7 @@ export default {
         drawSignalChips();
         drawShadeList();
         await refreshMarks();
+        loadExtendedQuote();
       } catch (error) {
         toast(error.message, "error");
         if (!data) {
@@ -375,6 +382,24 @@ export default {
       } finally {
         chartCardEl.classList.remove("is-refreshing");
       }
+    }
+
+    // The latest pre-market or after-hours price, for daily and weekly charts.
+    async function loadExtendedQuote() {
+      const intraday = state.interval === "15m" || state.interval === "1h";
+      if (!data || intraday || !state.marks.extended) {
+        extendedQuote = null;
+        return;
+      }
+      const symbol = data.symbol;
+      try {
+        const result = await api.get(`/api/extended${query({ symbols: symbol })}`);
+        if (data?.symbol !== symbol) return;
+        extendedQuote = result.quotes[symbol] || null;
+      } catch {
+        extendedQuote = null;
+      }
+      draw();
     }
 
     function setSymbol(raw) {
@@ -610,6 +635,16 @@ export default {
           notices.push(levels.reason || `No gamma levels for ${d.symbol}, as it has no listed options.`);
         }
       }
+      const quote = !intraday && state.marks.extended ? extendedQuote : null;
+      if (quote) {
+        const text = `${quote.label} ${fmt(quote.price, "num2")} (${fmt(quote.change_pct, "spct2")})`;
+        markLines.push({
+          yAxis: toScale(quote.price),
+          name: text,
+          lineStyle: { color: c.accent, width: 1, type: "dashed" },
+          label: { formatter: text, position: "insideStartTop", color: c.ink2, fontSize: 10.5 },
+        });
+      }
       if (state.marks.earnings && earnings && !intraday) {
         const dates = [...(earnings.earnings_history || []).map((row) => row.date)];
         if (!dates.length && !earnings.next_earnings) notices.push(`No earnings dates for ${d.symbol}.`);
@@ -655,28 +690,53 @@ export default {
         }
       });
 
-      series.push({
-        name: candleName,
-        type: "candlestick",
-        xAxisIndex: 0,
-        yAxisIndex: 0,
-        data: candleData,
-        large,
-        largeThreshold: 1800,
-        barMaxWidth: 14,
-        z: 2,
-        itemStyle: {
-          color: large ? c.up : c.surface,
-          color0: c.down,
-          borderColor: c.up,
-          borderColor0: c.down,
-          borderWidth: 1,
-        },
-        emphasis: { disabled: true },
+      // Crosses, gamma levels and shading belong to the price, whichever way it is drawn.
+      const priceMarks = {
         markPoint: marks.length ? { data: marks, silent: true, animation: false } : undefined,
         markLine: markLines.length ? { data: markLines, symbol: "none", silent: true, animation: false } : undefined,
         markArea: markAreas.length ? { data: markAreas, silent: true, animation: false } : undefined,
-      });
+      };
+      if (state.style === "line") {
+        // Closing prices only; the price keeps the first series colour, as in the on-price modes.
+        series.push({
+          name: candleName,
+          type: "line",
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          data: d.close.map(toScale),
+          showSymbol: false,
+          symbol: "circle",
+          symbolSize: 8,
+          sampling: n > 1800 ? "lttb" : undefined,
+          connectNulls: true,
+          z: 2,
+          lineStyle: { width: 2, color: c.series[0], cap: "round", join: "round" },
+          itemStyle: { color: c.series[0], borderColor: c.surface, borderWidth: 2 },
+          emphasis: { disabled: true },
+          ...priceMarks,
+        });
+      } else {
+        series.push({
+          name: candleName,
+          type: "candlestick",
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          data: candleData,
+          large,
+          largeThreshold: 1800,
+          barMaxWidth: 14,
+          z: 2,
+          itemStyle: {
+            color: large ? c.up : c.surface,
+            color0: c.down,
+            borderColor: c.up,
+            borderColor0: c.down,
+            borderWidth: 1,
+          },
+          emphasis: { disabled: true },
+          ...priceMarks,
+        });
+      }
       legend.push(candleName);
 
       // Price-scale overlays.
@@ -825,8 +885,11 @@ export default {
 
       replace(titleBox, `${d.symbol}`, h("span", { class: "sub-text", style: { fontWeight: 400 } }, d.name && d.name !== d.symbol ? ` ${d.name}` : ""));
       const scaleText = mode === "indexed" ? "Everything rebased to 100 at the left edge" : mode === "zscore" ? "Everything shown as standard deviations from its own average" : "True values in each pane";
-      const sessionText = extendedBars ? " Gray bands are pre-market and after-hours trading; VWAP counts regular hours only." : "";
+      const sessionText = extendedBars
+        ? " Gray bands are pre-market and after-hours trading; VWAP counts regular hours only."
+        : quote ? ` ${quote.label}: ${fmt(quote.price, "num2")} (${fmt(quote.change_pct, "spct2")}) at ${quote.when}, the dashed line.` : "";
       replace(subBox, `${INTERVALS.find((item) => item.value === d.interval)?.label} bars, last price ${fmt(d.close[n - 1], "num2")}. ${scaleText}.${sessionText}`);
+      replace(chartNote, `${state.style === "line" ? "The line follows each bar's closing price." : "Hollow blue candles closed up, solid red candles closed down."} Drag or scroll on the chart to zoom. On-price modes rescale everything to share one axis, and the tooltip always shows true values.`);
       replace(noticeBox, notices.map((text) => h("div", { class: "notice" }, text)));
       if (showingTable) drawTable();
     }
@@ -896,6 +959,7 @@ export default {
       pageHead("Chart Lab", "Candles with moving averages and indicators. Layer any market signal over a stock to see how they relate."),
       filters(
         field("Symbol", h("div", { style: { display: "flex", gap: "4px" } }, symbolInput, goButton)),
+        field("Price", segmented(PRICE_STYLES, state.style, (value) => { state.style = value; save(); draw(); }, "Price style"), "price_style"),
         field("Bars", segmented(INTERVALS, state.interval, (value) => { state.interval = value; load(); }, "Bar interval")),
         field("Range", rangeBox),
         field("Signal display", segmented(MODES, state.mode, (value) => { state.mode = value; save(); draw(); }, "Signal display mode"), "overlay_modes"),
@@ -909,8 +973,10 @@ export default {
           h("section", { class: "card" }, panelTitle("Lower panes"), panesBox))));
 
     await load();
+    const extendedTimer = setInterval(loadExtendedQuote, 3 * 60 * 1000);
     return {
       refresh: load,
+      unmount: () => clearInterval(extendedTimer),
       alertContext: () => (data ? { kind: "stock", symbol: data.symbol, label: data.symbol } : null),
       afterAttach: () => {
         if (handle) handle.chart.resize();

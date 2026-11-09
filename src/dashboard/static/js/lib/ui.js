@@ -1,5 +1,5 @@
 // Shared interface pieces: tiles, badges, filters, tables and page scaffolding.
-import { MISSING, append, fmt, fmtDate, h, replace, svg } from "./dom.js";
+import { MISSING, append, fmt, fmtDate, h, prefs, replace, svg } from "./dom.js";
 import { info } from "./guide.js";
 
 export function pageHead(title, subtitle, ...extras) {
@@ -158,14 +158,30 @@ export function heatCell(value, maxAbs, code = "spct1") {
 /**
  * Sortable data table.
  * columns: [{key, label, metric, fmt, left, sortable, value(row), render(row), wrap}]
+ *
+ * Clicking a column title sorts by it, again flips the direction, and a third time goes back
+ * to the original order. With an `id`, the table remembers the chosen sort between visits.
+ *
+ * With `reorder(keys)`, rows get a handle to drag them (or move them with the arrow keys),
+ * for lists the user curates. The new order of row keys is passed to `reorder` to save.
  */
-export function dataTable({ columns, rows, sort, rowKey, onRow, selectedKey, maxHeight, empty = "Nothing to show.", note }) {
+export function dataTable({ columns, rows, sort, rowKey, onRow, selectedKey, maxHeight, empty = "Nothing to show.", note, id, reorder, itemName = "row" }) {
   const wrap = h("div", { class: "table-wrap", style: maxHeight ? { maxHeight: `${maxHeight}px` } : {} });
-  let sortState = sort || null;
+  const remembered = id ? prefs.get(`table:${id}`, null) : null;
+  // A remembered choice wins, including "no sort" (the user's own order).
+  let sortState = remembered ? remembered.sort : (reorder ? null : sort || null);
   let current = rows;
   let selected = selectedKey;
+  let dragFrom = null;
 
   const valueOf = (column, row) => (column.value ? column.value(row) : row[column.key]);
+  const keyOf = (row) => String(rowKey(row));
+
+  function setSort(next) {
+    sortState = next;
+    if (id) prefs.set(`table:${id}`, { sort: sortState });
+    draw();
+  }
 
   function sorted() {
     if (!sortState) return current;
@@ -182,6 +198,63 @@ export function dataTable({ columns, rows, sort, rowKey, onRow, selectedKey, max
     });
   }
 
+  /** Move a row within what is on screen; that becomes the saved order. */
+  function moveRow(from, to) {
+    const order = sorted();
+    if (to < 0 || to >= order.length || from === to) return;
+    const next = [...order];
+    const [item] = next.splice(from, 1);
+    next.splice(to, 0, item);
+    current = next;
+    sortState = null;
+    if (id) prefs.set(`table:${id}`, { sort: null });
+    draw();
+    reorder(next.map(rowKey));
+    return keyOf(item);
+  }
+
+  function handleFor(row, index, total) {
+    const handle = h("button", {
+      class: "row-handle",
+      type: "button",
+      "aria-label": `Move ${keyOf(row)}. Use the up and down arrow keys`,
+      title: "Drag to reorder, or select and use the arrow keys",
+      dataset: { handle: keyOf(row) },
+      onkeydown: (event) => {
+        if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+        event.preventDefault();
+        const moved = moveRow(index, index + (event.key === "ArrowUp" ? -1 : 1));
+        if (moved) wrap.querySelector(`[data-handle="${CSS.escape(moved)}"]`)?.focus();
+      },
+      onclick: (event) => event.stopPropagation(),
+    }, "⠿");
+    handle.addEventListener("mousedown", () => { handle.closest("tr").draggable = true; });
+    handle.disabled = total < 2;
+    return handle;
+  }
+
+  function sortBar() {
+    if (!reorder) return null;
+    if (!sortState) {
+      return h("div", { class: "table-tools" }, h("span", { class: "sub-text" }, `Drag ⠿ to put your ${itemName}s in your own order, or select a column title to sort.`));
+    }
+    const column = columns.find((item) => item.key === sortState.key);
+    return h("div", { class: "table-tools" },
+      h("span", { class: "sub-text" }, `Sorted by ${column?.label || sortState.key}, ${sortState.dir === "asc" ? "low to high" : "high to low"}.`),
+      h("button", {
+        class: "btn btn-xs",
+        type: "button",
+        dataset: { keepOrder: "true" },
+        title: "Save this sorted order as your own order",
+        onclick: () => {
+          current = sorted();
+          setSort(null);
+          reorder(current.map(rowKey));
+        },
+      }, "Keep this order"),
+      h("button", { class: "btn btn-ghost btn-xs", type: "button", onclick: () => setSort(null) }, "Back to my order"));
+  }
+
   function draw() {
     if (!current.length) {
       replace(wrap, h("div", { class: "empty" }, empty));
@@ -189,31 +262,70 @@ export function dataTable({ columns, rows, sort, rowKey, onRow, selectedKey, max
     }
     const head = h("tr", {}, columns.map((column) => {
       const canSort = column.sortable !== false;
-      const direction = sortState && sortState.key === column.key ? (sortState.dir === "asc" ? " ↑" : " ↓") : "";
+      const active = sortState && sortState.key === column.key;
+      const direction = active ? (sortState.dir === "asc" ? " ↑" : " ↓") : "";
       return h("th", {
         class: `${column.left ? "left " : ""}${canSort ? "sortable" : ""} ${column.wrap ? "wrap" : ""} ${column.sticky ? "sticky" : ""}`,
         scope: "col",
-        "aria-sort": direction ? (sortState.dir === "asc" ? "ascending" : "descending") : null,
+        "aria-sort": active ? (sortState.dir === "asc" ? "ascending" : "descending") : null,
+        title: canSort ? "Sort by this column (select again to reverse, a third time to undo)" : null,
         onclick: canSort ? () => {
-          const descFirst = !column.left;
-          if (sortState && sortState.key === column.key) sortState = { key: column.key, dir: sortState.dir === "asc" ? "desc" : "asc" };
-          else sortState = { key: column.key, dir: descFirst ? "desc" : "asc" };
-          draw();
+          const first = column.left ? "asc" : "desc";
+          if (!active) setSort({ key: column.key, dir: first });
+          else if (sortState.dir === first) setSort({ key: column.key, dir: first === "asc" ? "desc" : "asc" });
+          else setSort(null);
         } : null,
       }, h("span", { class: "th-inner" }, `${column.label}${direction}`, column.metric ? info(column.metric) : null));
     }));
-    const body = h("tbody", {}, sorted().map((row) => {
+    const shown = sorted();
+    const body = h("tbody", {}, shown.map((row, index) => {
       const key = rowKey ? rowKey(row) : null;
-      return h("tr", {
+      const cells = columns.map((column, position) => {
+        const content = column.render ? column.render(row) : fmt(valueOf(column, row), column.fmt);
+        return h("td", { class: `${column.left ? "left " : ""}${column.wrap ? "wrap " : ""}${column.sticky ? "sticky" : ""}` },
+          reorder && position === 0 ? h("span", { class: "row-lead" }, handleFor(row, index, shown.length), content) : content);
+      });
+      const tr = h("tr", {
         class: `${onRow ? "clickable" : ""} ${key !== null && key === selected ? "is-selected" : ""}`,
         onclick: onRow ? (event) => {
           if (event.target.closest("a, button, input")) return;
           onRow(row);
         } : null,
-      }, columns.map((column) => h("td", { class: `${column.left ? "left " : ""}${column.wrap ? "wrap " : ""}${column.sticky ? "sticky" : ""}` },
-        column.render ? column.render(row) : fmt(valueOf(column, row), column.fmt))));
+      }, cells);
+      if (reorder) {
+        tr.addEventListener("dragstart", (event) => {
+          dragFrom = index;
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", String(index));
+          tr.classList.add("is-dragging");
+        });
+        tr.addEventListener("dragend", () => {
+          tr.draggable = false;
+          tr.classList.remove("is-dragging");
+          dragFrom = null;
+        });
+        tr.addEventListener("dragover", (event) => {
+          if (dragFrom === null) return;
+          event.preventDefault();
+          const box = tr.getBoundingClientRect();
+          const after = event.clientY > box.top + box.height / 2;
+          tr.classList.toggle("drop-before", !after);
+          tr.classList.toggle("drop-after", after);
+        });
+        tr.addEventListener("dragleave", () => tr.classList.remove("drop-before", "drop-after"));
+        tr.addEventListener("drop", (event) => {
+          if (dragFrom === null) return;
+          event.preventDefault();
+          const after = tr.classList.contains("drop-after");
+          tr.classList.remove("drop-before", "drop-after");
+          let to = index + (after ? 1 : 0);
+          if (dragFrom < to) to -= 1;
+          moveRow(dragFrom, to);
+        });
+      }
+      return tr;
     }));
-    replace(wrap, h("table", { class: "data" }, h("thead", {}, head), body));
+    replace(wrap, sortBar(), h("table", { class: "data" }, h("thead", {}, head), body));
     if (note) wrap.append(h("div", { class: "table-note" }, note));
   }
 

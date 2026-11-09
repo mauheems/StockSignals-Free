@@ -1,5 +1,6 @@
 """The API and shared catalogues, run offline against a small generated database."""
 
+import datetime as dt
 import re
 from pathlib import Path
 
@@ -692,3 +693,160 @@ def test_signal_catalog_says_which_page_shows_each_signal(client):
     pages = {item["id"]: item["page"] for item in signals}
     assert pages["vix"] == "volatility"
     assert all(pages.values())
+
+
+# --------------------------------------------------------------- Key signals choice
+def test_key_signals_can_be_chosen_reordered_and_reset(client):
+    from src.dashboard.payloads import OVERVIEW_SIGNALS
+
+    saved = client.post("/api/overview/signals", json={"ids": ["dix", "vix", "dix"]}).json()
+    assert saved["ids"] == ["dix", "vix"]
+    body = client.get("/api/overview").json()
+    assert body["signal_ids"] == ["dix", "vix"]
+    assert [row["id"] for row in body["signals"]] == ["dix", "vix"]
+    assert body["signals_custom"] is True
+    assert client.post("/api/overview/signals", json={"ids": ["no_such_signal"]}).status_code == 400
+    assert client.post("/api/overview/signals", json={"ids": "vix"}).status_code == 400
+    assert client.post("/api/overview/signals", json={"ids": []}).json()["ids"] == []
+    assert client.get("/api/overview").json()["signals"] == []
+    assert client.delete("/api/overview/signals").json()["ids"] == OVERVIEW_SIGNALS
+    body = client.get("/api/overview").json()
+    assert body["signal_ids"] == OVERVIEW_SIGNALS
+    assert body["signals_custom"] is False
+
+
+def test_retired_signal_ids_are_skipped(store):
+    from src.dashboard.payloads import OVERVIEW_SIGNALS_KEY, overview_signal_ids
+
+    store.kv_set(OVERVIEW_SIGNALS_KEY, ["vix", "signal_from_an_old_version"])
+    try:
+        assert overview_signal_ids(store) == ["vix"]
+    finally:
+        store.kv_delete(OVERVIEW_SIGNALS_KEY)
+
+
+# ------------------------------------------------------------------- list order
+def test_watchlist_order_is_saved_and_new_symbols_go_last(client, store):
+    original = store.watchlist()
+    try:
+        reversed_order = list(reversed(original))
+        assert client.post("/api/watchlist/order", json={"symbols": reversed_order}).json()["watchlist"] == reversed_order
+        assert [row["symbol"] for row in client.get("/api/watchlist").json()["rows"]] == reversed_order
+        # Unknown tickers are ignored and missing ones keep their place at the end.
+        partial = client.post("/api/watchlist/order", json={"symbols": [original[0], "ZZZZ"]}).json()["watchlist"]
+        assert partial[0] == original[0] and sorted(partial) == sorted(original)
+        assert client.post("/api/watchlist/order", json={"symbols": "NVDA"}).status_code == 400
+        store.watchlist_add("SPY")
+        assert store.watchlist()[-1] == "SPY"
+    finally:
+        store.watchlist_remove("SPY")
+        store.watchlist_reorder(original)
+
+
+def test_alert_order_is_saved(tmp_path):
+    db = Store(tmp_path / "order.db")
+    first = db.alert_add({"kind": "signal", "signal": "vix", "op": "above", "value": 30, "note": ""})
+    second = db.alert_add({"kind": "signal", "signal": "dix", "op": "above", "value": 45, "note": ""})
+    assert [alert["id"] for alert in db.alerts()] == [first, second]
+    db.alerts_reorder([second])
+    assert [alert["id"] for alert in db.alerts()] == [second, first]
+    third = db.alert_add({"kind": "signal", "signal": "vvix", "op": "above", "value": 120, "note": ""})
+    assert db.alerts()[-1]["id"] == third
+
+
+def test_older_databases_get_an_order_column(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE watchlist (symbol TEXT PRIMARY KEY, added_at REAL NOT NULL)")
+        conn.executemany("INSERT INTO watchlist VALUES (?, ?)", [("MSFT", 2.0), ("AAPL", 1.0), ("NVDA", 3.0)])
+    db = Store(path)
+    assert db.watchlist() == ["AAPL", "MSFT", "NVDA"]
+    db.watchlist_add("AMD")
+    assert db.watchlist() == ["AAPL", "MSFT", "NVDA", "AMD"]
+    Store(path)  # opening again is harmless
+    assert db.watchlist() == ["AAPL", "MSFT", "NVDA", "AMD"]
+
+
+# ------------------------------------------------------------- prediction markets
+def _kalshi(ticker, event, close, bid, ask, **extra):
+    return {"ticker": ticker, "event_ticker": event, "close_time": close, "yes_bid_dollars": str(bid), "yes_ask_dollars": str(ask),
+            "last_price_dollars": str(bid), "volume_fp": "1000", **extra}
+
+
+def test_fed_odds_are_scaled_to_the_next_meeting():
+    from src.data import prediction_markets as pm
+
+    now = _et("2026-11-09 08:00")
+    markets = [
+        _kalshi("KXFEDDECISION-26DEC-H25", "KXFEDDECISION-26DEC", "2026-12-09T18:59:00Z", 0.70, 0.72, yes_sub_title="Hike 25bps"),
+        _kalshi("KXFEDDECISION-26DEC-H0", "KXFEDDECISION-26DEC", "2026-12-09T18:59:00Z", 0.24, 0.26, yes_sub_title="Fed maintains rate"),
+        _kalshi("KXFEDDECISION-26DEC-C25", "KXFEDDECISION-26DEC", "2026-12-09T18:59:00Z", 0.04, 0.06, yes_sub_title="Cut 25bps"),
+        _kalshi("KXFEDDECISION-27JAN-H0", "KXFEDDECISION-27JAN", "2027-01-27T18:59:00Z", 0.5, 0.52, yes_sub_title="Fed maintains rate"),
+    ]
+    fed = pm.fed_next(markets, now)
+    assert fed["event"] == "KXFEDDECISION-26DEC"
+    assert [item["step"] for item in fed["outcomes"]] == [-1, 0, 1]
+    assert sum(item["prob"] for item in fed["outcomes"]) == pytest.approx(1.0)
+    assert fed["likely"] == "Hike 25bps"
+    assert fed["hike"] == pytest.approx(0.71 / 1.01)  # midpoints 0.71 + 0.25 + 0.05
+
+
+def test_ladder_finds_the_middle_estimate_and_range():
+    from src.data import prediction_markets as pm
+
+    now = _et("2026-11-09 08:00")
+    close = "2026-12-10T13:29:00Z"
+    # Chance of CPI coming in above 3.4, 3.6, ... 4.2%. One quote out of line (3.8 above 3.6).
+    rows = [(3.4, 0.95), (3.6, 0.70), (3.8, 0.75), (4.0, 0.30), (4.2, 0.05)]
+    markets = [_kalshi(f"KXCPIYOY-26NOV-T{k}", "KXCPIYOY-26NOV", close, p - 0.005, p + 0.005, floor_strike=k) for k, p in rows]
+    reading = pm.ladder(markets, now)
+    assert reading["period"] == "November 2026"
+    # Smoothed: above 3.8 is capped at 70%; 50% falls halfway between 3.8 (70%) and 4.0 (30%).
+    assert reading["median"] == pytest.approx(3.9)
+    assert 3.4 < reading["low"] < 3.6 and 4.0 < reading["high"] < 4.2
+
+
+def test_wide_quotes_fall_back_to_the_last_trade():
+    from src.data import prediction_markets as pm
+
+    assert pm.kalshi_price({"yes_bid_dollars": "0.10", "yes_ask_dollars": "0.90", "last_price_dollars": "0.40"}) == 0.40
+    assert pm.kalshi_price({"yes_bid_dollars": "0.40", "yes_ask_dollars": "0.44", "last_price_dollars": "0.10"}) == pytest.approx(0.42)
+
+
+def test_earnings_odds_are_matched_to_tickers():
+    from src.data import prediction_markets as pm
+
+    events = [
+        {"title": "Will Nvidia (NVDA) beat quarterly earnings?", "slug": "nvda-q", "markets": [
+            {"question": "Will Nvidia (NVDA) beat quarterly earnings?", "outcomePrices": '["0.8", "0.2"]', "bestBid": 0.78, "bestAsk": 0.82,
+             "volumeNum": 900.0, "endDate": "2026-11-17T22:00:00Z", "description": "The Street consensus estimate for Nvidia's non-GAAP EPS is $2.53 as of market creation."}]},
+        {"title": "Will Moog (MOG.A) beat quarterly earnings?", "slug": "mog", "markets": [
+            {"outcomePrices": '["0.6", "0.4"]', "volumeNum": 50.0, "endDate": "2026-11-20T22:00:00Z", "description": ""}]},
+        {"title": "Will Old Co (OLD) beat quarterly earnings?", "slug": "old", "markets": [
+            {"outcomePrices": '["0.6", "0.4"]', "volumeNum": 50.0, "endDate": "2026-10-01T22:00:00Z"}]},
+    ]
+    odds = pm.earnings_odds(events, dt.date(2026, 11, 9))
+    assert set(odds) == {"NVDA", "MOG-A"}
+    assert odds["NVDA"]["prob"] == pytest.approx(0.80)
+    assert odds["NVDA"]["consensus_eps"] == 2.53
+    assert odds["NVDA"]["url"].endswith("/nvda-q")
+
+
+def test_catalysts_show_what_the_markets_expect(store):
+    from src.dashboard.payloads import _catalysts
+
+    store.kv_set("events:macro", [{"date": "2099-12-09", "label": "FOMC rate decision", "kind": "macro", "metric": "econ_calendar"}])
+    store.kv_set("pm:board", {"fed": {"date": "2099-12-09", "likely": "Hike 25bps", "likely_prob": 0.76}})
+    try:
+        fomc = [event for event in _catalysts(store, limit=50) if event["label"].startswith("FOMC")][0]
+        assert fomc["odds"] == {"text": "Hike 25bps 76%", "metric": "fed_odds"}
+    finally:
+        store.kv_delete("events:macro")
+        store.kv_delete("pm:board")
+
+
+def test_macro_page_carries_prediction_markets(client):
+    body = client.get("/api/macro").json()
+    assert set(body["prediction"]) == {"board", "rows", "history"}

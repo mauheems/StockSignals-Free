@@ -339,6 +339,7 @@ export default {
         h("div", { class: "mt" }, tradesBox),
         h("p", { class: "table-note" }, "Results include dividends and the costs set above. Trades fill at the next day's open, never at a price from the signal's own close. Cash earns no interest here, which understates strategies that spend time out of the market. Rules chosen after seeing the data will usually look better than they would live."));
       replace(boardBox, dataTable({
+        id: "backtest-leaderboard",
         columns: LEADERBOARD,
         rows: result.rows,
         rowKey: (row) => row.id,

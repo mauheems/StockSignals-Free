@@ -68,7 +68,7 @@ export default {
         tile({ label: "Local database", valueText: `${Math.round(status.db_bytes / 1e6)} MB`, foot: h("span", {}, "data/market.db") }));
       if (table) table.update(status.sources);
       else {
-        table = dataTable({ columns, rows: status.sources, rowKey: (row) => row.id });
+        table = dataTable({ id: "sources", columns, rows: status.sources, rowKey: (row) => row.id });
         replace(tableBox, table);
       }
     };

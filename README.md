@@ -43,19 +43,19 @@ I've only run it on Linux so far. Mac and Windows should work, but they're untes
 
 | Page | The question it answers |
 |---|---|
-| **Overview** | How healthy is the market right now, what just changed, and what's coming up? Before the open, index futures show where things are heading |
+| **Overview** | How healthy is the market right now, what just changed, and what's coming up? Before the open, index futures show where things are heading. Choose and order the Key signals you care about |
 | **Trend & Breadth** | Are the indices trending, and are most stocks actually taking part? 50/200-day averages, McClellan, new highs and lows |
 | **Rotation** | Where is money moving? Rotation map, sector performance, risk-on and risk-off ratios |
 | **Volatility** | How much movement is expected, and how stressed is that? VIX curve, realized vs implied, VVIX, SKEW, MOVE |
 | **Options & Gamma** | Where are positions stacked up? Dealer gamma by strike, gamma flip, call and put walls, max pain, skew, expected move, unusual activity, for any optionable ticker |
 | **Flows & Sentiment** | Is the crowd scared or greedy? Put/call ratios, dark pool index, Fear & Greed, AAII, futures positioning |
-| **Macro & Credit** | Does the backdrop support stocks? Yield curve, credit spreads, liquidity, inflation, jobs |
+| **Macro & Credit** | Does the backdrop support stocks? Yield curve, credit spreads, liquidity, inflation, jobs, and what prediction markets bet on the next Fed decision, a recession and the next inflation number |
 
 **Look at your own stocks**
 
 | Page | What it's for |
 |---|---|
-| **Watchlist** | Add any ticker and see all its signals side by side, including pre-market and after-hours prices outside regular hours |
+| **Watchlist** | Add any ticker and see all its signals side by side, including pre-market and after-hours prices outside regular hours. Drag stocks into your own order, or sort by any column and keep that order |
 | **Alerts** | Get a notification when a stock or a market signal crosses a level you pick, for example "NVDA below $180" or "VIX above 30". Spot something on any page? The Alerts button in the top bar opens a side panel that starts from what you're looking at. You'll see notifications in the app; there are no emails or texts (yet) |
 | **S&P 500 Scanner** | Rank and filter every member to find new names |
 | **Chart Lab** | Candles, moving averages and indicators, with any market signal layered over the price. Intraday charts can include pre-market and after-hours bars |
@@ -84,6 +84,7 @@ No sign-ups, just free public sources:
 | SqueezeMetrics | Dark pool index (DIX) and market GEX history | Next morning |
 | FRED, US Treasury | Rates, credit, liquidity, economy | Daily to monthly |
 | CNN, AAII | Sentiment | Intraday, weekly |
+| Kalshi, Polymarket | Odds on the Fed, recession, inflation, jobs and company earnings | Live prices, checked hourly |
 | CFTC, FINRA | Futures positioning, off-exchange short volume | Weekly, daily |
 | Federal Reserve, FRED | Economic calendar | Checked daily |
 | Wikipedia | S&P 500 membership | When it changes |

@@ -194,7 +194,17 @@ def create_app(store: Store | None = None, *, background: bool = True) -> FastAP
     # ----------------------------------------------------------------- market pages
     @app.get("/api/overview")
     def overview():
-        return services.cached("overview", compute=lambda: payloads.overview(store, services.ctx()), ttl=60)
+        # The chosen Key signals are part of the key, so a changed list is never served stale.
+        chosen = tuple(payloads.overview_signal_ids(store))
+        return services.cached("overview", chosen, compute=lambda: payloads.overview(store, services.ctx()), ttl=60)
+
+    @app.post("/api/overview/signals")
+    def overview_signals_set(body: dict = Body(...)):
+        return {"ids": payloads.set_overview_signals(store, body.get("ids")), "custom": True}
+
+    @app.delete("/api/overview/signals")
+    def overview_signals_reset():
+        return {"ids": payloads.reset_overview_signals(store), "custom": False}
 
     @app.get("/api/breadth")
     def breadth(range: str = "1y"):
@@ -257,6 +267,14 @@ def create_app(store: Store | None = None, *, background: bool = True) -> FastAP
         services.side_jobs.submit(services.prepare_new_symbol, symbol)
         return {"symbol": symbol, "watchlist": store.watchlist()}
 
+    @app.post("/api/watchlist/order")
+    def watchlist_order(body: dict = Body(...)):
+        symbols = body.get("symbols")
+        if not isinstance(symbols, list) or not all(isinstance(item, str) for item in symbols):
+            raise HTTPException(status_code=400, detail="Send the watchlist order as a list of tickers.")
+        # Cached pages key on the watchlist's order already, so no data refresh is needed.
+        return {"watchlist": store.watchlist_reorder(symbols)}
+
     @app.delete("/api/watchlist/{symbol}")
     def watchlist_remove(symbol: str):
         target = _symbol(symbol)
@@ -303,6 +321,13 @@ def create_app(store: Store | None = None, *, background: bool = True) -> FastAP
         rule = alert_logic.parse_rule(alert_body(body), store, lambda db, symbol: None)
         view = alert_logic.alert_view({"id": 0, "rule": rule, "enabled": 1, "created_at": None, "last_triggered": None}, store, services.ctx())
         return {"label": view["label"], "fmt": view["fmt"], "status": view["status"]}
+
+    @app.post("/api/alerts/order")
+    def alerts_order(body: dict = Body(...)):
+        ids = body.get("ids")
+        if not isinstance(ids, list) or not all(isinstance(item, int) and not isinstance(item, bool) for item in ids):
+            raise HTTPException(status_code=400, detail="Send the alert order as a list of alert ids.")
+        return {"ids": store.alerts_reorder(ids)}
 
     @app.post("/api/alerts/read")
     def alerts_mark_read():
@@ -364,7 +389,10 @@ def create_app(store: Store | None = None, *, background: bool = True) -> FastAP
 
     @app.get("/api/futures")
     def futures():
-        return {"rows": extended.futures_board(store), "market": payloads.market_state()}
+        # Index futures plus the watchlist's biggest moves outside regular hours.
+        quotes = extended.extended_quotes(store, store.watchlist())
+        movers = sorted(quotes.values(), key=lambda quote: abs(quote["change_pct"]), reverse=True)
+        return {"rows": extended.futures_board(store), "movers": movers[:8], "market": payloads.market_state()}
 
     @app.get("/api/signals")
     def signals():

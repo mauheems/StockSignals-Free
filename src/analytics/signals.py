@@ -361,6 +361,12 @@ SIGNALS: list[Signal] = [
     Signal("aaii_spread", "AAII bulls minus bears", "Sentiment", "snum1", _stored("aaii:spread"), "crowd", lower_better(-20.0, 20.0), ffill=10, page="flows", positive_only=False),
     Signal("aaii_bull", "AAII bullish share", "Sentiment", "pct1", _stored("aaii:bull"), ffill=10, page="flows"),
     Signal("aaii_bear", "AAII bearish share", "Sentiment", "pct1", _stored("aaii:bear"), ffill=10, page="flows"),
+    # Prediction markets (Kalshi): probabilities in percent, or the market's middle estimate.
+    Signal("pm_fed_hike", "Fed hike odds, next meeting", "Prediction markets", "pct0", _stored("pm:fed_hike"), higher_is="bad", page="macro"),
+    Signal("pm_fed_cut", "Fed cut odds, next meeting", "Prediction markets", "pct0", _stored("pm:fed_cut"), page="macro"),
+    Signal("pm_recession", "Recession odds, next year", "Prediction markets", "pct0", _stored("pm:recession"), higher_is="bad", page="macro"),
+    Signal("pm_cpi", "Expected CPI inflation, next report", "Prediction markets", "pct1", _stored("pm:cpi"), higher_is="bad", page="macro", ffill=10),
+    Signal("pm_unemployment", "Expected unemployment rate, next report", "Prediction markets", "pct1", _stored("pm:unemployment"), higher_is="bad", page="macro", ffill=10),
     Signal("cot_am_net", "Asset managers' S&P futures net position", "Sentiment", "num0", _stored("cot:es:asset_mgr"), lag=3, ffill=10, page="flows", positive_only=False),
     Signal("cot_lev_net", "Leveraged funds' S&P futures net position", "Sentiment", "num0", _stored("cot:es:lev_funds"), lag=3, ffill=10, page="flows", positive_only=False),
 
@@ -370,7 +376,7 @@ SIGNALS: list[Signal] = [
 ]
 
 REGISTRY: dict[str, Signal] = {item.id: item for item in SIGNALS}
-SIGNAL_GROUPS = ["Composite", "Trend", "Breadth", "Volatility", "Options & flows", "Rotation", "Credit & macro", "Sentiment"]
+SIGNAL_GROUPS = ["Composite", "Trend", "Breadth", "Volatility", "Options & flows", "Rotation", "Credit & macro", "Sentiment", "Prediction markets"]
 
 # Technical readings of whichever symbol is being tested; rules refer to them as "self:<id>".
 SELF_SIGNALS: dict[str, dict] = {

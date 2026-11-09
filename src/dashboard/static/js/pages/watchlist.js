@@ -80,7 +80,11 @@ export default {
         render: (row) => {
           if (!row.next_earnings) return MISSING;
           const days = daysUntil(row.next_earnings);
-          return `${fmtDate(row.next_earnings)}${days >= 0 && days < 100 ? ` (${days}d)` : ""}`;
+          const when = `${fmtDate(row.next_earnings)}${days >= 0 && days < 100 ? ` (${days}d)` : ""}`;
+          // Polymarket's beat odds, where a market exists for this report.
+          return row.earnings_beat === null || row.earnings_beat === undefined
+            ? when
+            : h("span", { title: "Polymarket odds of beating the EPS estimate" }, when, h("span", { class: "sub-text" }, ` · ${Math.round(row.earnings_beat * 100)}% beat`));
         },
       },
       { key: "spark", label: "1 month", sortable: false, render: (row) => h("div", { class: "spark-cell" }, sparkline(row.spark, { width: 80, height: 20 })) },
@@ -110,9 +114,26 @@ export default {
         tableEl.update(merged);
       } else {
         const shown = hasExtended ? [...columns.slice(0, 3), extendedColumn, ...columns.slice(3)] : columns;
-        tableEl = dataTable({ columns: shown, rows: merged, onRow: (row) => { location.hash = `#/stock/${encodeURIComponent(row.symbol)}`; }, rowKey: (row) => row.symbol });
+        tableEl = dataTable({
+          id: "watchlist",
+          columns: shown,
+          rows: merged,
+          onRow: (row) => { location.hash = `#/stock/${encodeURIComponent(row.symbol)}`; },
+          rowKey: (row) => row.symbol,
+          itemName: "stock",
+          reorder: saveOrder,
+        });
         replace(tableBox, tableEl);
       }
+    };
+
+    // Keeps the page's own copy in the new order too, so a later refresh doesn't undo it.
+    const saveOrder = (symbols) => {
+      rows = symbols.map((symbol) => rows.find((row) => row.symbol === symbol)).filter(Boolean);
+      api.post("/api/watchlist/order", { symbols }).catch((error) => {
+        toast(error.message, "error");
+        load();
+      });
     };
 
     const loadExtended = async () => {

@@ -3,7 +3,8 @@ import { api } from "../lib/api.js";
 import { chartCard, lineChart, rankedBars } from "../lib/charts.js";
 import { MISSING, fmt, fmtDate, h, replace } from "../lib/dom.js";
 import { info } from "../lib/guide.js";
-import { dataTable, deltaSpan, emptyBox, field, filters, pageHead, scoreBadge, segmented, sparkline, statusBadge, tile } from "../lib/ui.js";
+import { signalOptions } from "../lib/rules.js";
+import { dataTable, deltaSpan, emptyBox, field, fillSelect, filters, pageHead, scoreBadge, segmented, sparkline, statusBadge, tile, toast } from "../lib/ui.js";
 import { timeText } from "./alerts.js";
 
 function alertsCard(data) {
@@ -97,11 +98,21 @@ function futuresSection(data) {
     foot: h("span", {}, `${row.symbol} · ${row.when}`),
     href: `#/chart/${encodeURIComponent(row.symbol)}`,
   }));
+  const movers = (data.movers || []).map((quote) => h("a", { class: "mover", href: `#/stock/${encodeURIComponent(quote.symbol)}`, title: `${quote.label} at ${quote.when}` },
+    h("b", {}, quote.symbol),
+    h("span", { class: "mono" }, fmt(quote.price, "num2")),
+    deltaSpan(fmt(Math.abs(quote.change_pct), "pct2"), quote.change_pct, "good"),
+    h("span", { class: "ext-tag" }, quote.session === "pre" ? "Pre" : "AH")));
   return h("section", { class: "mt" },
     h("div", { class: "section-title", style: { marginTop: 0 } }, `${FUTURES_TITLES[data.market.state] || "Outside market hours"}: index futures`, info("index_futures")),
     h("p", { class: "sub-text", style: { margin: "0 0 8px" } },
       "Change against each future's price at the last 4pm close. The rest of this page uses regular-session data until the market opens."),
-    h("div", { class: "grid grid-tiles" }, tiles));
+    h("div", { class: "grid grid-tiles" }, tiles),
+    movers.length
+      ? h("div", { class: "movers" },
+        h("span", { class: "movers-title" }, "Your watchlist, biggest moves", info("extended_hours")),
+        movers)
+      : null);
 }
 
 /** A list that shows the first few rows, with a working control to reveal the rest. */
@@ -141,7 +152,9 @@ function catalystsCard(events) {
     h("span", { class: "feed-text" },
       event.symbol ? h("a", { href: `#/stock/${encodeURIComponent(event.symbol)}`, style: { color: "inherit" } }, event.label) : h("span", {}, event.label),
       info(event.metric),
-      h("span", { class: "sub-text" }, event.days === 0 ? "today" : event.days === 1 ? "tomorrow" : `in ${event.days} days`))));
+      h("span", { class: "sub-text" }, event.days === 0 ? "today" : event.days === 1 ? "tomorrow" : `in ${event.days} days`),
+      // What prediction markets expect for this event, when they trade on it.
+      event.odds ? h("span", { class: "odds-note" }, `· ${event.odds.text}`, info(event.odds.metric)) : null)));
   return h("section", { class: "card" },
     h("h3", { class: "card-title", style: { marginBottom: "6px" } }, "Next catalysts"),
     h("p", { class: "card-sub", style: { marginBottom: "4px" } }, "Option expirations, Fed and economic releases, and your watchlist's earnings."),
@@ -220,6 +233,149 @@ export default {
     const onAlertsChanged = () => loadAlerts();
     document.addEventListener("alerts-changed", onAlertsChanged);
 
+    // ------------------------------------------------------- Key signals, editable
+    let editing = false;
+    let catalog = null;
+    let saving = Promise.resolve();
+
+    const signalInfo = (id) => {
+      const row = last.signals.find((item) => item.id === id);
+      const entry = catalog?.groups.flatMap((group) => group.signals).find((item) => item.id === id);
+      return { row, label: row?.label || entry?.label || id, metric: row?.metric || entry?.metric || id };
+    };
+
+    // Saves in the background; the list on screen has already changed.
+    const saveSignals = (ids) => {
+      last.signal_ids = ids;
+      last.signals_custom = true;
+      last.signals = ids.map((id) => last.signals.find((row) => row.id === id)).filter(Boolean);
+      drawSignals();
+      saving = saving
+        .then(() => api.post("/api/overview/signals", { ids }))
+        .then(async (result) => {
+          // A newly added signal needs its reading, so fetch the page data again.
+          if (result.ids.some((id) => !last.signals.some((row) => row.id === id))) draw(await api.get("/api/overview"));
+        })
+        .catch((error) => {
+          toast(error.message, "error");
+          return api.get("/api/overview").then(draw);
+        });
+    };
+
+    const move = (from, to) => {
+      const ids = [...last.signal_ids];
+      if (to < 0 || to >= ids.length || from === to) return;
+      const [item] = ids.splice(from, 1);
+      ids.splice(to, 0, item);
+      saveSignals(ids);
+    };
+
+    const editRow = (id, index, count) => {
+      const { row, label, metric } = signalInfo(id);
+      const li = h("li", { class: "edit-row", draggable: "true", dataset: { signal: id } },
+        h("span", { class: "drag-handle", "aria-hidden": "true", title: "Drag to reorder" }, "⠿"),
+        h("span", { class: "edit-label" }, label, info(metric)),
+        h("span", { class: "sub-text edit-value" }, row ? fmt(row.value, row.fmt) : "No data yet"),
+        h("span", { class: "edit-actions" },
+          h("button", { class: "btn btn-ghost btn-xs", type: "button", "aria-label": `Move ${label} up`, title: "Move up", disabled: index === 0, onclick: () => move(index, index - 1) }, "↑"),
+          h("button", { class: "btn btn-ghost btn-xs", type: "button", "aria-label": `Move ${label} down`, title: "Move down", disabled: index === count - 1, onclick: () => move(index, index + 1) }, "↓"),
+          h("button", { class: "btn btn-ghost btn-xs", type: "button", "aria-label": `Remove ${label}`, title: "Remove from Key signals", dataset: { removeSignal: id }, onclick: () => saveSignals(last.signal_ids.filter((item) => item !== id)) }, "×")));
+      li.addEventListener("dragstart", (event) => {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", String(index));
+        li.classList.add("is-dragging");
+      });
+      li.addEventListener("dragend", () => li.classList.remove("is-dragging"));
+      li.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        const box = li.getBoundingClientRect();
+        const after = event.clientY > box.top + box.height / 2;
+        li.classList.toggle("drop-before", !after);
+        li.classList.toggle("drop-after", after);
+      });
+      li.addEventListener("dragleave", () => li.classList.remove("drop-before", "drop-after"));
+      li.addEventListener("drop", (event) => {
+        event.preventDefault();
+        const after = li.classList.contains("drop-after");
+        li.classList.remove("drop-before", "drop-after");
+        const from = Number(event.dataTransfer.getData("text/plain"));
+        if (Number.isNaN(from)) return;
+        let to = index + (after ? 1 : 0);
+        if (from < to) to -= 1;
+        move(from, to);
+      });
+      return li;
+    };
+
+    const drawSignals = () => {
+      const head = (...actions) => h("div", { class: "card-head" },
+        h("h3", { class: "card-title" }, "Key signals"),
+        h("div", { class: "card-actions" }, actions));
+      if (!editing) {
+        replace(signalsBox, h("section", { class: "card" },
+          head(h("button", {
+            class: "btn btn-xs",
+            type: "button",
+            id: "edit-signals",
+            title: "Choose which signals appear here, and in what order",
+            onclick: async () => {
+              try {
+                catalog = catalog || await api.get("/api/signals");
+                editing = true;
+                drawSignals();
+              } catch (error) {
+                toast(error.message, "error");
+              }
+            },
+          }, "Edit list")),
+          dataTable({
+            id: "overview-signals",
+            columns: SIGNAL_COLUMNS,
+            rows: last.signals,
+            rowKey: (row) => row.id,
+            itemName: "signal",
+            reorder: (ids) => saveSignals([...ids, ...last.signal_ids.filter((item) => !ids.includes(item))]),
+            empty: last.signal_ids.length ? "Signals appear here as their data loads." : "No Key signals chosen. Select Edit list to add some.",
+          })));
+        return;
+      }
+      const ids = last.signal_ids;
+      const shown = new Set(ids);
+      const addSelect = h("select", {
+        class: "input",
+        "aria-label": "Add a signal",
+        id: "add-key-signal",
+        onchange: (event) => {
+          const id = event.target.value;
+          if (id) saveSignals([...last.signal_ids, id]);
+        },
+      });
+      const choices = signalOptions(catalog)
+        .map((group) => ({ ...group, options: group.options.filter((item) => !shown.has(item.value)) }))
+        .filter((group) => group.options.length);
+      fillSelect(addSelect, [{ value: "", label: choices.length ? "Add a signal…" : "Every signal is already shown" }, ...choices], "");
+      replace(signalsBox, h("section", { class: "card" },
+        head(
+          last.signals_custom ? h("button", {
+            class: "btn btn-ghost btn-xs",
+            type: "button",
+            id: "reset-signals",
+            onclick: () => {
+              saving = saving
+                .then(() => api.del("/api/overview/signals"))
+                .then(() => api.get("/api/overview"))
+                .then(draw)
+                .catch((error) => toast(error.message, "error"));
+            },
+          }, "Reset to default") : null,
+          h("button", { class: "btn btn-primary btn-xs", type: "button", id: "done-signals", onclick: () => { editing = false; drawSignals(); } }, "Done")),
+        h("p", { class: "card-sub" }, "Drag rows to reorder them, or use the arrows. Removed signals can be added back below, and every signal stays on its own page."),
+        ids.length
+          ? h("ol", { class: "edit-list", "aria-label": "Key signals, in order" }, ids.map((id, index) => editRow(id, index, ids.length)))
+          : emptyBox("No Key signals chosen. Add some below."),
+        h("div", { style: { marginTop: "10px", maxWidth: "360px" } }, field("Add a signal", addSelect))));
+    };
+
     const drawSectors = () => {
       const period = SECTOR_PERIODS.find((item) => item.value === sectorPeriod).label;
       sectorChart.setSubtitle(`Sector ETFs, ${period.toLowerCase()}`);
@@ -230,13 +386,13 @@ export default {
     };
 
     const draw = (data) => {
+      // A server started before an update sends the older format; keep the page working.
+      data.signal_ids = data.signal_ids || data.signals.map((row) => row.id);
       last = data;
       replace(heroBox, heroCard(data.health));
       replace(pillarsBox, pillarsCard(data));
       replace(tilesBox, data.tiles.map(quoteTile));
-      replace(signalsBox, h("section", { class: "card" },
-        h("h3", { class: "card-title", style: { marginBottom: "6px" } }, "Key signals"),
-        dataTable({ columns: SIGNAL_COLUMNS, rows: data.signals, empty: "Signals appear here as their data loads." })));
+      drawSignals();
       replace(sideBox, alertsBox, flipsCard(data.flips), catalystsCard(data.catalysts));
       replace(gammaBox, gammaCard(data.gamma));
       if (data.health.history) {

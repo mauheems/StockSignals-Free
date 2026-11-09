@@ -8,6 +8,19 @@ import { dataTable, deltaSpan, emptyBox, heatCell, kvRow, pageHead, statusBadge,
 
 const pct = (value, code = "pct1") => (value === null || value === undefined ? MISSING : fmt(value * 100, code));
 
+/** Polymarket's odds that the company beats its earnings estimate, when such a market exists. */
+function earningsOddsLine(odds, symbol) {
+  if (!odds) return null;
+  const estimate = odds.consensus_eps !== null && odds.consensus_eps !== undefined ? `the $${odds.consensus_eps.toFixed(2)} EPS estimate` : "its EPS estimate";
+  return h("p", { class: "earnings-odds" },
+    h("span", { class: "ext-tag" }, "Earnings odds"),
+    h("span", {}, `Chance that ${symbol} beats ${estimate} on ${fmtDate(odds.date)}: `),
+    h("strong", {}, `${Math.round(odds.prob * 100)}%`),
+    h("span", { class: "sub-text" }, `(${fmt(odds.volume, "usdcompact")} traded)`),
+    info("earnings_odds"),
+    h("a", { href: odds.url, target: "_blank", rel: "noopener noreferrer" }, "Polymarket ↗"));
+}
+
 function section(title, ...rows) {
   return h("section", { class: "card" }, h("h3", { class: "card-title", style: { marginBottom: "6px" } }, title), h("div", { class: "kv" }, rows));
 }
@@ -162,6 +175,7 @@ function earningsTable(history) {
   return h("section", { class: "card" },
     h("h3", { class: "card-title", style: { marginBottom: "6px" } }, "Earnings history", info("earnings_surprise")),
     dataTable({
+      id: "earnings",
       columns: [
         { key: "date", label: "Report date", left: true, render: (row) => fmtDate(row.date, true), value: (row) => row.date },
         { key: "estimate", label: "EPS estimate", fmt: "num2" },
@@ -236,6 +250,7 @@ export default {
           h("button", { class: "btn", type: "button", id: "stock-add-alert", onclick: () => openAlertDrawer(alertContext()) }, "Add alert"),
           h("a", { class: "btn", href: `#/backtest/${encodeURIComponent(data.symbol)}` }, "Backtest this"))),
       data.chips.length ? chipsBox : null,
+      earningsOddsLine(data.earnings_odds, data.symbol),
       periodCells(s),
       h("div", { class: "split-2-1" }, priceChart.el, trendSection(s)),
       h("div", { class: "grid grid-3 mt" }, technicalSections(s)),
