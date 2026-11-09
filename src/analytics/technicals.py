@@ -135,13 +135,21 @@ def anchored_vwap(frame: pd.DataFrame, anchor) -> pd.Series:
     return weighted / volume
 
 
-def session_vwap(frame: pd.DataFrame) -> pd.Series:
-    """Intraday VWAP that restarts at each session."""
+def session_vwap(frame: pd.DataFrame, regular: pd.Series | None = None) -> pd.Series:
+    """Intraday VWAP that restarts at each session.
+
+    ``regular`` marks the regular-hours bars. When given, pre-market and after-hours
+    bars are left out (as most platforms do) and get no VWAP value.
+    """
     typical = (frame["High"] + frame["Low"] + frame["Close"]) / 3.0
+    volume_bars = frame["Volume"]
+    if regular is not None:
+        typical, volume_bars = typical.where(regular), volume_bars.where(regular)
     sessions = frame.index.normalize()
-    weighted = (typical * frame["Volume"]).groupby(sessions).cumsum()
-    volume = frame["Volume"].groupby(sessions).cumsum().replace(0.0, np.nan)
-    return weighted / volume
+    weighted = (typical * volume_bars).groupby(sessions).cumsum()
+    volume = volume_bars.groupby(sessions).cumsum().replace(0.0, np.nan)
+    vwap = weighted / volume
+    return vwap.where(regular) if regular is not None else vwap
 
 
 def cross_events(fast: pd.Series, slow: pd.Series) -> list[dict]:
@@ -214,7 +222,7 @@ def relative_strength_score(adj_close: pd.Series) -> float | None:
     return float(sum(parts))
 
 
-def indicator_frame(frame: pd.DataFrame, *, intraday: bool = False) -> pd.DataFrame:
+def indicator_frame(frame: pd.DataFrame, *, intraday: bool = False, regular: pd.Series | None = None) -> pd.DataFrame:
     """Every chart overlay and pane for one symbol, computed on the full history."""
     close = frame["Close"]
     out = pd.DataFrame(index=frame.index)
@@ -246,7 +254,7 @@ def indicator_frame(frame: pd.DataFrame, *, intraday: bool = False) -> pd.DataFr
     out["low_52w"] = frame["Low"].rolling(TRADING_DAYS, min_periods=20).min()
     if has_volume:
         if intraday:
-            out["vwap"] = session_vwap(frame)
+            out["vwap"] = session_vwap(frame, regular)
         else:
             anchor = pd.Timestamp(year=frame.index[-1].year, month=1, day=1)
             out["vwap"] = anchored_vwap(frame, anchor)

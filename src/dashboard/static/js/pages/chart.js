@@ -35,7 +35,10 @@ const MARKS = [
   { id: "crosses", label: "Golden and death crosses", metric: "golden_cross", dailyOnly: true },
   { id: "gamma", label: "Gamma levels", metric: "gamma_levels" },
   { id: "earnings", label: "Earnings dates", metric: "earnings_marks", dailyOnly: true },
+  // Changes which bars are loaded, so toggling it fetches new data instead of only redrawing.
+  { id: "extended", label: "Pre-market and after hours", metric: "extended_hours", intradayOnly: true, reload: true },
 ];
+const SESSION_NAMES = { pre: "Pre-market", post: "After hours" };
 const PANES = [
   { id: "volume", label: "Volume", metric: "volume_bars" },
   { id: "rvol", label: "Relative volume", metric: "rvol" },
@@ -60,7 +63,7 @@ const DEFAULTS = {
   range: "1y",
   mode: "panes",
   overlays: { sma50: true, sma200: true },
-  marks: { crosses: true },
+  marks: { crosses: true, extended: true },
   panes: { volume: true },
   signals: [],
   shades: [],
@@ -107,6 +110,8 @@ export default {
   async mount(root, { params }) {
     const saved = prefs.get("chartlab", {});
     const state = { ...DEFAULTS, ...saved };
+    // Settings saved before extended hours existed get it switched on, like a fresh start.
+    state.marks = { extended: true, ...state.marks };
     if (params[0]) state.symbol = params[0].toUpperCase();
     let catalog = { groups: [] };
     let data = null;
@@ -210,9 +215,9 @@ export default {
         (on) => { state.overlays[item.id] = on; save(); draw(); },
         item.muted ? c.deemph : c.series[item.slot],
       )));
-      replace(marksBox, MARKS.filter((item) => !(intraday && item.dailyOnly)).map((item) => checkRow(
+      replace(marksBox, MARKS.filter((item) => !(intraday && item.dailyOnly) && !(!intraday && item.intradayOnly)).map((item) => checkRow(
         item.label, item.metric, !!state.marks[item.id],
-        (on) => { state.marks[item.id] = on; save(); refreshMarks(); },
+        (on) => { state.marks[item.id] = on; save(); if (item.reload) load(); else refreshMarks(); },
       )));
       replace(panesBox, PANES.filter((item) => !(intraday && item.id === "rs")).map((item) => checkRow(
         item.label, item.metric, !!state.panes[item.id],
@@ -330,7 +335,9 @@ export default {
       const id = ++loadId;
       chartCardEl.classList.add("is-refreshing");
       try {
-        const next = await api.get(`/api/chart/${encodeURIComponent(state.symbol)}${query({ interval: state.interval, range: state.range })}`);
+        const intraday = state.interval === "15m" || state.interval === "1h";
+        const extended = intraday && !!state.marks.extended;
+        const next = await api.get(`/api/chart/${encodeURIComponent(state.symbol)}${query({ interval: state.interval, range: state.range, extended })}`);
         if (id !== loadId) return;
         const symbolChanged = !data || next.symbol !== data.symbol;
         data = next;
@@ -620,6 +627,23 @@ export default {
           });
         }
       }
+      // Pre-market and after-hours bars sit on a light gray band.
+      let extendedBars = 0;
+      if (intraday && d.extended) {
+        const sessions = d.sessions || [];
+        let start = null;
+        sessions.forEach((session, index) => {
+          const outside = session !== "regular";
+          if (outside) extendedBars += 1;
+          if (outside && start === null) start = index;
+          if ((!outside || index === sessions.length - 1) && start !== null) {
+            const end = outside ? index : index - 1;
+            markAreas.push([{ xAxis: d.dates[start], itemStyle: { color: c.deemph, opacity: 0.13 } }, { xAxis: d.dates[end] }]);
+            start = null;
+          }
+        });
+        if (!extendedBars) notices.push(`${d.symbol} has no pre-market or after-hours trades in this range.`);
+      }
       state.shades.forEach((rule, index) => {
         const entry = aligned.signals[rule.signal];
         if (!entry || entry.error) return;
@@ -724,10 +748,11 @@ export default {
       });
 
       const previousZoom = handle?.chart.getOption()?.dataZoom?.[0];
-      const zoomKeep = previousZoom && canvas.dataset.zoomKey === `${d.symbol}|${d.interval}|${d.range}`
+      const zoomKey = `${d.symbol}|${d.interval}|${d.range}|${d.extended}`;
+      const zoomKeep = previousZoom && canvas.dataset.zoomKey === zoomKey
         ? { start: previousZoom.start, end: previousZoom.end }
         : { start: 0, end: 100 };
-      canvas.dataset.zoomKey = `${d.symbol}|${d.interval}|${d.range}`;
+      canvas.dataset.zoomKey = zoomKey;
 
       const option = {
         ...baseOption(),
@@ -788,6 +813,8 @@ export default {
           }
           const cross = d.crosses.find((event) => d.dates[index].startsWith(event.date));
           if (cross && state.marks.crosses) rows.push({ color: cross.type === "golden" ? c.good : c.critical, value: cross.type === "golden" ? "Golden cross" : "Death cross", name: "50/200 averages" });
+          const session = SESSION_NAMES[d.sessions?.[index]];
+          if (session) rows.push({ color: c.deemph, value: session, name: "Session" });
           return tooltipRows(axisDate(d.dates[index]), rows);
         },
       };
@@ -798,7 +825,8 @@ export default {
 
       replace(titleBox, `${d.symbol}`, h("span", { class: "sub-text", style: { fontWeight: 400 } }, d.name && d.name !== d.symbol ? ` ${d.name}` : ""));
       const scaleText = mode === "indexed" ? "Everything rebased to 100 at the left edge" : mode === "zscore" ? "Everything shown as standard deviations from its own average" : "True values in each pane";
-      replace(subBox, `${INTERVALS.find((item) => item.value === d.interval)?.label} bars, last close ${fmt(d.close[n - 1], "num2")}. ${scaleText}.`);
+      const sessionText = extendedBars ? " Gray bands are pre-market and after-hours trading; VWAP counts regular hours only." : "";
+      replace(subBox, `${INTERVALS.find((item) => item.value === d.interval)?.label} bars, last price ${fmt(d.close[n - 1], "num2")}. ${scaleText}.${sessionText}`);
       replace(noticeBox, notices.map((text) => h("div", { class: "notice" }, text)));
       if (showingTable) drawTable();
     }
@@ -826,7 +854,7 @@ export default {
       for (let index = n - 1; index >= Math.max(0, n - limit); index -= 1) {
         rows.push(h("tr", {}, all.map((column, position) => {
           let value;
-          if (position === 0) value = d.dates[index];
+          if (position === 0) value = SESSION_NAMES[d.sessions?.[index]] ? `${d.dates[index]} · ${SESSION_NAMES[d.sessions[index]]}` : d.dates[index];
           else if (position <= 5) value = [d.open, d.high, d.low, d.close, d.volume][position - 1][index];
           else value = extra[position - 6].values[index];
           return h("td", { class: position === 0 ? "left" : "" }, position === 0 ? value : (column.fmt === "compact" ? (value === null ? MISSING : compact(value)) : fmt(value, column.fmt)));

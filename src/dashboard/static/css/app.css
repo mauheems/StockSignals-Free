@@ -218,6 +218,14 @@ a.tile:hover { text-decoration: none; background: var(--surface-2); }
 .chip button { border: 0; background: transparent; padding: 0 0 0 2px; color: var(--ink-2); line-height: 1; font-size: 14px; }
 .chip button:hover { color: var(--ink); }
 .chip-swatch { width: 10px; height: 3px; border-radius: 2px; flex: none; }
+
+/* Pre-market and after-hours prices */
+.ext-cell, .ext-line { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ext-line:empty { display: none; }
+.ext-tag {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .03em; color: var(--ink-2);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px;
+}
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 
 /* ------------------------------------------------------------------- info dot */

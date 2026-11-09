@@ -554,3 +554,127 @@ def test_alert_preview_never_downloads(client, store, monkeypatch):
     assert body.status_code == 200
     assert body.json()["status"]["available"] is False
     assert store.get_prices("NV").empty
+
+
+# ------------------------------------------------------------ pre-market & after hours
+def _bars(points: list[tuple[str, float]]) -> pd.DataFrame:
+    """5-minute bars at the given ET times, as Yahoo returns them."""
+    index = pd.DatetimeIndex([pd.Timestamp(stamp) for stamp, _ in points]).tz_localize("America/New_York")
+    close = np.array([price for _, price in points])
+    return pd.DataFrame({"Open": close, "High": close, "Low": close, "Close": close, "Volume": 0.0}, index=index)
+
+
+def _et(text: str):
+    return pd.Timestamp(text).tz_localize("America/New_York").to_pydatetime()
+
+
+@pytest.fixture
+def daily_store(tmp_path):
+    db = Store(tmp_path / "ext.db")
+    days = pd.DatetimeIndex(["2026-11-05", "2026-11-06"])
+    db.upsert_prices("ABC", pd.DataFrame({"Open": [99.0, 100.0], "High": [99.0, 100.0], "Low": [99.0, 100.0], "Close": [99.0, 100.0], "AdjClose": [99.0, 100.0], "Volume": [1e6, 1e6]}, index=days))
+    return db
+
+
+FRIDAY_TO_MONDAY = [("2026-11-06 15:55", 100.0), ("2026-11-06 19:55", 101.0), ("2026-11-09 07:45", 103.0)]
+
+
+def test_pre_market_change_is_against_the_previous_close(daily_store):
+    from src.data import extended
+
+    quote = extended._quote(daily_store, "ABC", _bars(FRIDAY_TO_MONDAY), _et("2026-11-09 08:00"))
+    assert quote["session"] == "pre"
+    assert quote["reference"] == 100.0
+    assert quote["change_pct"] == pytest.approx(3.0)
+    assert quote["when"] == "07:45 ET"
+
+
+def test_after_hours_change_is_against_the_same_days_close(daily_store):
+    from src.data import extended
+
+    quote = extended._quote(daily_store, "ABC", _bars(FRIDAY_TO_MONDAY[:2]), _et("2026-11-08 12:00"))
+    assert quote["session"] == "post"
+    assert quote["reference"] == 100.0
+    assert quote["change_pct"] == pytest.approx(1.0)
+    assert quote["when"] == "Fri 19:55 ET"
+
+
+def test_no_extended_price_when_the_last_trade_is_regular_or_stale(daily_store):
+    from src.data import extended
+
+    assert extended._quote(daily_store, "ABC", _bars(FRIDAY_TO_MONDAY[:1]), _et("2026-11-06 15:58")) is None
+    assert extended._quote(daily_store, "ABC", _bars(FRIDAY_TO_MONDAY), _et("2026-11-16 08:00")) is None
+
+
+def test_futures_change_is_against_the_last_completed_close(daily_store):
+    from src.data import extended
+
+    bars = [("2026-11-06 15:55", 7400.0), ("2026-11-09 03:20", 7416.5), ("2026-11-09 09:55", 7450.0)]
+    overnight = extended._quote(daily_store, "ES=F", _bars(bars[:2]), _et("2026-11-09 03:30"))
+    assert overnight["session"] == "futures"
+    assert overnight["reference"] == 7400.0
+    # During Monday's session the reference is still Friday's close, not the latest bar.
+    during = extended._quote(daily_store, "ES=F", _bars(bars), _et("2026-11-09 10:00"))
+    assert during["reference"] == 7400.0
+    assert during["change"] == pytest.approx(50.0)
+
+
+def test_during_regular_hours_only_futures_are_fetched(daily_store, monkeypatch):
+    from src.data import extended
+
+    requested = []
+    monkeypatch.setattr(extended, "_cache", {})
+    monkeypatch.setattr(extended, "now_et", lambda: _et("2026-11-09 10:00"))
+    monkeypatch.setattr(extended.market_data, "yahoo_download", lambda symbols, **kwargs: requested.extend(symbols) or {})
+    assert extended.extended_quotes(daily_store, ["ABC"]) == {}
+    assert requested == []
+    extended.extended_quotes(daily_store, ["ABC", "ES=F"])
+    assert requested == ["ES=F"]
+
+
+def test_a_failed_extended_download_leaves_pages_working(client, monkeypatch):
+    from src.data import extended
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("Yahoo is down")
+
+    monkeypatch.setattr(extended, "_cache", {})
+    monkeypatch.setattr(extended, "now_et", lambda: _et("2026-11-09 08:00"))
+    monkeypatch.setattr(extended.market_data, "yahoo_download", broken)
+    assert client.get("/api/extended?symbols=NVDA,AAPL").json()["quotes"] == {}
+    assert client.get("/api/futures").json()["rows"] == []
+
+
+def test_extended_hours_on_intraday_charts(client, monkeypatch):
+    from src.dashboard import payloads
+
+    times = pd.date_range("2026-11-06 04:00", "2026-11-06 19:45", freq="15min")
+    close = np.linspace(100, 110, len(times))
+    frame = pd.DataFrame({"Open": close, "High": close + 0.5, "Low": close - 0.5, "Close": close, "AdjClose": close, "Volume": 1000.0}, index=times)
+    calls = []
+
+    def fake_intraday(symbol, interval, prepost=False):
+        calls.append(prepost)
+        return frame if prepost else frame[(frame.index.time >= pd.Timestamp("09:30").time()) & (frame.index.time < pd.Timestamp("16:00").time())]
+
+    monkeypatch.setattr(payloads, "intraday_prices", fake_intraday)
+    body = client.get("/api/chart/NVDA?interval=15m&range=5d&extended=true").json()
+    assert body["extended"] is True
+    assert {"pre", "regular", "post"} == set(body["sessions"])
+    vwap = body["indicators"]["vwap"]
+    for session, value in zip(body["sessions"], vwap):
+        assert (value is None) == (session != "regular")
+    plain = client.get("/api/chart/NVDA?interval=15m&range=5d&extended=false").json()
+    assert plain["extended"] is False
+    assert set(plain["sessions"]) == {"regular"}
+    assert calls == [True, False]
+    daily = client.get("/api/chart/NVDA?interval=1d&range=1y&extended=true").json()
+    assert daily["extended"] is False and daily["sessions"] == []
+
+
+def test_futures_bars_are_never_marked_as_extended():
+    from src.dashboard.payloads import bar_sessions
+
+    index = pd.DatetimeIndex(["2026-11-06 03:00", "2026-11-06 12:00", "2026-11-06 18:00"])
+    assert bar_sessions(index, "ES=F") == ["regular"] * 3
+    assert bar_sessions(index, "SPY") == ["pre", "regular", "post"]

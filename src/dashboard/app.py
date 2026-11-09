@@ -19,7 +19,7 @@ from src.analytics import alerts as alert_logic
 from src.analytics.signals import SELF_SIGNALS, Ctx
 from src.dashboard import payloads
 from src.dashboard.metric_guide import GUIDE_CATEGORIES, METRICS
-from src.data import cboe, fundamentals, macro_sources, refresh
+from src.data import cboe, extended, fundamentals, macro_sources, refresh
 from src.data.catalog import normalize_symbol
 from src.data.market_data import SymbolNotFound, ensure_prices
 from src.data.store import Store
@@ -341,13 +341,23 @@ def create_app(store: Store | None = None, *, background: bool = True) -> FastAP
         return payloads.stock_options_summary(store, target)
 
     @app.get("/api/chart/{symbol}")
-    def chart(symbol: str, interval: str = "1d", range: str = "1y"):
+    def chart(symbol: str, interval: str = "1d", range: str = "1y", extended: bool = False):
         target = _symbol(symbol)
         return services.cached(
-            "chart", target, interval, range,
-            compute=lambda: payloads.chart(store, services.ctx(), target, interval, range),
+            "chart", target, interval, range, extended,
+            compute=lambda: payloads.chart(store, services.ctx(), target, interval, range, extended),
             ttl=60,
         )
+
+    @app.get("/api/extended")
+    def extended_prices(symbols: str = Query(default="", max_length=2000)):
+        # Not tied to the data version: pre-market prices move while nothing else refreshes.
+        wanted = [payloads.price_symbol(_symbol(item)) for item in symbols.split(",") if item.strip()][:100]
+        return {"quotes": extended.extended_quotes(store, wanted), "market": payloads.market_state()}
+
+    @app.get("/api/futures")
+    def futures():
+        return {"rows": extended.futures_board(store), "market": payloads.market_state()}
 
     @app.get("/api/signals")
     def signals():

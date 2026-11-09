@@ -28,6 +28,7 @@ from src.data.catalog import (
     SECTORS,
     normalize_symbol,
 )
+from src.data.extended import CLOSE as REGULAR_CLOSE, OPEN as REGULAR_OPEN
 from src.data.market_calendar import last_completed_session, market_state, now_et, upcoming_expirations
 from src.data.market_data import SymbolNotFound, ensure_prices, intraday_prices
 from src.data.refresh import save_option_snapshot
@@ -776,9 +777,9 @@ def _weekly_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return weekly
 
 
-def _chart_frame(store: Store, symbol: str, interval: str) -> pd.DataFrame:
+def _chart_frame(store: Store, symbol: str, interval: str, extended: bool = False) -> pd.DataFrame:
     if interval in ("15m", "1h"):
-        return intraday_prices(symbol, interval)
+        return intraday_prices(symbol, interval, prepost=extended)
     frame = ensure_prices(store, symbol).dropna(subset=["Open", "High", "Low", "Close"])
     return _weekly_frame(frame) if interval == "1wk" else frame
 
@@ -793,13 +794,31 @@ def _crop(frame: pd.DataFrame, interval: str, range_key: str) -> tuple[pd.DataFr
     return frame[frame.index >= frame.index[-1] - pd.Timedelta(days=days)], range_key
 
 
-def chart(store: Store, ctx: Ctx, symbol: str, interval: str, range_key: str) -> dict:
+def bar_sessions(index: pd.DatetimeIndex, symbol: str) -> list[str]:
+    """'pre', 'regular' or 'post' per intraday bar (times in ET).
+
+    Futures trade nearly around the clock with no pre-market of their own, so all their
+    bars count as regular.
+    """
+    if symbol.endswith("=F"):
+        return ["regular"] * len(index)
+    sessions = []
+    for stamp in index:
+        clock = stamp.time()
+        sessions.append("pre" if clock < REGULAR_OPEN else "post" if clock >= REGULAR_CLOSE else "regular")
+    return sessions
+
+
+def chart(store: Store, ctx: Ctx, symbol: str, interval: str, range_key: str, extended: bool = False) -> dict:
     target = price_symbol(symbol)
     if interval not in INTERVAL_RANGES:
         raise ValueError(f"Unknown chart interval '{interval}'.")
-    frame = _chart_frame(store, target, interval)
     intraday = interval in ("15m", "1h")
-    indicators = ta.indicator_frame(frame, intraday=intraday)
+    extended = extended and intraday
+    frame = _chart_frame(store, target, interval, extended)
+    sessions = bar_sessions(frame.index, target) if intraday else []
+    regular = pd.Series([item == "regular" for item in sessions], index=frame.index) if extended else None
+    indicators = ta.indicator_frame(frame, intraday=intraday, regular=regular)
     if not intraday and target != "SPY":
         benchmark = ctx.adj("SPY") if interval == "1d" else _weekly_frame(ctx.prices("SPY").dropna(subset=["Open"]))["AdjClose"]
         joined = pd.concat([frame["AdjClose"], benchmark], axis=1, join="inner").dropna()
@@ -829,6 +848,8 @@ def chart(store: Store, ctx: Ctx, symbol: str, interval: str, range_key: str) ->
         "volume": _round(cropped["Volume"].fillna(0.0).values, 0),
         "indicators": {column: _round(shown[column].values, 4) for column in shown.columns},
         "crosses": crosses,
+        "extended": extended,
+        "sessions": sessions[len(frame) - len(cropped):] if intraday else [],
         "market": market_state(),
     }
 

@@ -83,6 +83,27 @@ function quoteTile(item) {
   });
 }
 
+const FUTURES_TITLES = { pre: "Before the open", post: "After the close", closed: "While the market is closed" };
+
+/** Index futures trade almost around the clock, so they show the mood before stocks open. */
+function futuresSection(data) {
+  if (data.market.state === "open" || !data.rows.length) return null;
+  const tiles = data.rows.map((row) => tile({
+    label: row.name,
+    metric: "index_futures",
+    value: row.price,
+    fmtCode: "num2",
+    delta: deltaSpan(`${fmt(row.change_pct, "spct2")} since the last close`, row.change_pct, "good"),
+    foot: h("span", {}, `${row.symbol} · ${row.when}`),
+    href: `#/chart/${encodeURIComponent(row.symbol)}`,
+  }));
+  return h("section", { class: "mt" },
+    h("div", { class: "section-title", style: { marginTop: 0 } }, `${FUTURES_TITLES[data.market.state] || "Outside market hours"}: index futures`, info("index_futures")),
+    h("p", { class: "sub-text", style: { margin: "0 0 8px" } },
+      "Change against each future's price at the last 4pm close. The rest of this page uses regular-session data until the market opens."),
+    h("div", { class: "grid grid-tiles" }, tiles));
+}
+
 /** A list that shows the first few rows, with a working control to reveal the rest. */
 function expandable(rows, limit) {
   const box = h("div", { class: "feed" });
@@ -177,7 +198,17 @@ export default {
     const sideBox = h("div", { class: "stack" });
     const gammaBox = h("div", {});
     const alertsBox = h("div", {});
+    const futuresBox = h("div", {});
     let last = null;
+
+    // Futures move while no other data refreshes, so they poll on their own schedule.
+    const loadFutures = async () => {
+      try {
+        replace(futuresBox, futuresSection(await api.get("/api/futures")));
+      } catch {
+        replace(futuresBox);
+      }
+    };
 
     const loadAlerts = async () => {
       try {
@@ -233,6 +264,7 @@ export default {
 
     replace(root,
       pageHead("Market overview", "Where the US market stands now, what changed recently and what's coming up. Select any info button for an explanation."),
+      futuresBox,
       h("div", { class: "split-1-2" }, heroBox, pillarsBox),
       tilesBox,
       h("div", { class: "split-2-1 mt", style: { alignItems: "start" } }, signalsBox, sideBox),
@@ -243,14 +275,20 @@ export default {
       }, "Sector performance period"))),
       h("div", { class: "grid grid-3" }, spxChart.el, sectorChart.el, gammaBox));
 
+    loadFutures();
     draw(await api.get("/api/overview"));
     await loadAlerts();
+    // Started only once the page has loaded, so a failed load can't leave a timer behind.
+    const futuresTimer = setInterval(loadFutures, 3 * 60 * 1000);
     return {
       refresh: async () => {
         draw(await api.get("/api/overview"));
         await loadAlerts();
       },
-      unmount: () => document.removeEventListener("alerts-changed", onAlertsChanged),
+      unmount: () => {
+        clearInterval(futuresTimer);
+        document.removeEventListener("alerts-changed", onAlertsChanged);
+      },
     };
   },
 };

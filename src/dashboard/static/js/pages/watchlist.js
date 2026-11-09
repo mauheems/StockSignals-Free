@@ -1,12 +1,25 @@
 // Your own list of stocks with every signal side by side.
 import { api } from "../lib/api.js";
 import { MISSING, daysUntil, fmt, fmtDate, h, replace } from "../lib/dom.js";
-import { dataTable, emptyBox, errorBox, heatCell, pageHead, sparkline, statusBadge, symbolLink, toast } from "../lib/ui.js";
+import { dataTable, deltaSpan, emptyBox, errorBox, heatCell, pageHead, sparkline, statusBadge, symbolLink, toast } from "../lib/ui.js";
 
 export function chipList(chips) {
   if (!chips?.length) return h("span", { class: "sub-text" }, MISSING);
   return h("div", { class: "chips", style: { flexWrap: "nowrap" } }, chips.map((chip) => h("span", { class: `chip tone-${chip.tone}`, title: chip.text }, chip.text)));
 }
+
+const SESSION_TAGS = { pre: "Pre", post: "AH", futures: "Fut" };
+
+/** Pre-market or after-hours price and change, as a compact table cell. */
+export function extendedCell(quote) {
+  if (!quote) return h("span", { class: "sub-text" }, MISSING);
+  return h("span", { class: "ext-cell", title: `${quote.label} price at ${quote.when}, change against the regular close of ${fmt(quote.reference, "num2")}` },
+    h("span", { class: "ext-tag" }, SESSION_TAGS[quote.session] || ""),
+    fmt(quote.price, "num2"),
+    deltaSpan(fmt(Math.abs(quote.change_pct), "pct2"), quote.change_pct, "good"));
+}
+
+const EXTENDED_REFRESH_MS = 3 * 60 * 1000;
 
 export default {
   title: () => "Watchlist",
@@ -73,21 +86,52 @@ export default {
       { key: "spark", label: "1 month", sortable: false, render: (row) => h("div", { class: "spark-cell" }, sparkline(row.spark, { width: 80, height: 20 })) },
     ];
 
-    const draw = (data) => {
-      if (!data.rows.length) {
+    const extendedColumn = {
+      key: "extended", label: "Ext. hours", metric: "extended_hours",
+      value: (row) => row.extended?.change_pct ?? null,
+      render: (row) => extendedCell(row.extended),
+    };
+    let rows = [];
+    let quotes = {};
+    let withExtended = false;
+
+    const draw = () => {
+      if (!rows.length) {
         replace(tableBox, emptyBox("Your watchlist is empty. Add a ticker above to start."));
         tableEl = null;
         return;
       }
+      const merged = rows.map((row) => ({ ...row, extended: quotes[row.symbol] || null }));
+      // The column only exists outside regular hours, so the table is rebuilt when it comes or goes.
+      const hasExtended = merged.some((row) => row.extended);
+      if (hasExtended !== withExtended) tableEl = null;
+      withExtended = hasExtended;
       if (tableEl) {
-        tableEl.update(data.rows);
+        tableEl.update(merged);
       } else {
-        tableEl = dataTable({ columns, rows: data.rows, onRow: (row) => { location.hash = `#/stock/${encodeURIComponent(row.symbol)}`; }, rowKey: (row) => row.symbol });
+        const shown = hasExtended ? [...columns.slice(0, 3), extendedColumn, ...columns.slice(3)] : columns;
+        tableEl = dataTable({ columns: shown, rows: merged, onRow: (row) => { location.hash = `#/stock/${encodeURIComponent(row.symbol)}`; }, rowKey: (row) => row.symbol });
         replace(tableBox, tableEl);
       }
     };
 
-    const load = async () => draw(await api.get("/api/watchlist"));
+    const loadExtended = async () => {
+      const symbols = rows.filter((row) => !row.error).map((row) => row.symbol);
+      if (!symbols.length) return;
+      try {
+        const data = await api.get(`/api/extended?symbols=${encodeURIComponent(symbols.join(","))}`);
+        quotes = data.quotes;
+      } catch {
+        quotes = {};
+      }
+      draw();
+    };
+
+    const load = async () => {
+      rows = (await api.get("/api/watchlist")).rows;
+      draw();
+      loadExtended();
+    };
 
     const input = h("input", { class: "input", placeholder: "Ticker, for example AMD", "aria-label": "Ticker to add", spellcheck: false, style: { width: "220px" } });
     const addButton = h("button", { class: "btn btn-primary", type: "submit" }, "Add to watchlist");
@@ -128,6 +172,7 @@ export default {
     } catch (error) {
       replace(tableBox, errorBox(error.message, load));
     }
-    return { refresh: load };
+    const extendedTimer = setInterval(loadExtended, EXTENDED_REFRESH_MS);
+    return { refresh: load, unmount: () => clearInterval(extendedTimer) };
   },
 };

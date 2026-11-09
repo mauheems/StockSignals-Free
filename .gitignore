@@ -6,5 +6,5 @@ __pycache__/
 coverage.xml
 .DS_Store
 # Created on each computer when the app runs; never shared.
-data/
-results/
+/data/
+/results/

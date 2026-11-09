@@ -203,6 +203,21 @@ export default {
     const optionsBox = h("div", {}, optionsSection(null, s));
     const fundamentalBox = h("div", { class: "grid grid-3" }, h("section", { class: "card" }, emptyBox("Loading company data…")));
     const earningsBox = h("div", {});
+    const extendedBox = h("span", { class: "ext-line" });
+    const loadExtended = async () => {
+      try {
+        const quote = (await api.get(`/api/extended?symbols=${encodeURIComponent(data.symbol)}`)).quotes[data.symbol];
+        replace(extendedBox, quote ? [
+          h("span", { class: "ext-tag" }, quote.label),
+          h("strong", {}, fmt(quote.price, "num2")),
+          deltaSpan(`${fmt(Math.abs(quote.change), "num2")} (${fmt(Math.abs(quote.change_pct), "pct2")})`, quote.change_pct, "good"),
+          h("span", { class: "sub-text" }, quote.when),
+          info("extended_hours"),
+        ] : null);
+      } catch {
+        replace(extendedBox);
+      }
+    };
     const chipsBox = h("div", { class: "chips", style: { marginBottom: "10px" } },
       data.chips.map((chip) => h("span", { class: `chip tone-${chip.tone}` }, chip.text, info(chip.metric))));
 
@@ -212,6 +227,7 @@ export default {
         h("span", { class: "hero-figure", style: { fontSize: "34px" } }, fmt(s.last, "num2")),
         deltaSpan(`${fmt(Math.abs(s.change ?? 0), "num2")} (${fmt(Math.abs(s.change_pct ?? 0), "pct2")}) today`, s.change_pct, "good"),
         h("span", { class: "sub-text" }, `As of ${fmtDate(s.date, true)}`),
+        extendedBox,
         h("div", { style: { display: "flex", gap: "6px", marginLeft: "auto", flexWrap: "wrap" } },
           watchButton,
           h("a", { class: "btn", href: `#/chart/${encodeURIComponent(data.symbol)}` }, "Open in Chart Lab"),
@@ -225,6 +241,7 @@ export default {
       h("div", { class: "mt" }, fundamentalBox),
       h("div", { class: "mt" }, earningsBox));
 
+    loadExtended();
     const chartData = await api.get(`/api/chart/${encodeURIComponent(data.symbol)}?interval=1d&range=1y`);
     priceChart.render(lineChart({
       dates: chartData.dates,
@@ -248,6 +265,12 @@ export default {
       })
       .catch((error) => { if (active) replace(fundamentalBox, h("section", { class: "card" }, emptyBox(error.message))); });
 
-    return { unmount: () => { active = false; } };
+    const extendedTimer = setInterval(loadExtended, 3 * 60 * 1000);
+    return {
+      unmount: () => {
+        active = false;
+        clearInterval(extendedTimer);
+      },
+    };
   },
 };

@@ -41,8 +41,12 @@ def yahoo_download(
     period: str | None = None,
     interval: str = "1d",
     timeout: float = 30,
+    prepost: bool = False,
 ) -> dict[str, pd.DataFrame]:
-    """Download a batch of symbols; symbols with no data are simply left out."""
+    """Download a batch of symbols; symbols with no data are simply left out.
+
+    ``prepost`` adds pre-market and after-hours bars (intraday intervals only).
+    """
     if not symbols:
         return {}
     raw = yf.download(
@@ -50,6 +54,7 @@ def yahoo_download(
         start=start,
         period=period if start is None else None,
         interval=interval,
+        prepost=prepost,
         group_by="ticker",
         auto_adjust=False,
         actions=False,
@@ -198,19 +203,22 @@ def ensure_prices(store: Store, symbol: str, start: str = "2000-01-01", max_age:
     return frame
 
 
-_intraday_cache: dict[tuple[str, str], tuple[float, pd.DataFrame]] = {}
+_intraday_cache: dict[tuple[str, str, bool], tuple[float, pd.DataFrame]] = {}
 _intraday_guard = threading.Lock()
 
 
-def intraday_prices(symbol: str, interval: str) -> pd.DataFrame:
-    """Recent 15-minute or hourly bars (Yahoo keeps 60 days and 2 years respectively)."""
+def intraday_prices(symbol: str, interval: str, prepost: bool = False) -> pd.DataFrame:
+    """Recent 15-minute or hourly bars (Yahoo keeps 60 days and 2 years respectively).
+
+    With ``prepost`` the pre-market and after-hours bars are included too.
+    """
     period = {"15m": "60d", "1h": "730d"}[interval]
-    key = (symbol, interval)
+    key = (symbol, interval, prepost)
     with _intraday_guard:
         cached = _intraday_cache.get(key)
     if cached and time.time() - cached[0] < 300:
         return cached[1]
-    frames = yahoo_download([symbol], period=period, interval=interval)
+    frames = yahoo_download([symbol], period=period, interval=interval, prepost=prepost)
     frame = frames.get(symbol)
     if frame is None:
         if cached:

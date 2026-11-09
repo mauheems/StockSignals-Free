@@ -13,6 +13,7 @@ from __future__ import annotations
 GUIDE_CATEGORIES = [
     {"id": "scores", "label": "Scores"},
     {"id": "trend", "label": "Trend & moving averages"},
+    {"id": "hours", "label": "Pre-market & after hours"},
     {"id": "breadth", "label": "Market breadth"},
     {"id": "rotation", "label": "Rotation"},
     {"id": "volatility", "label": "Volatility"},
@@ -1121,7 +1122,7 @@ METRICS: dict[str, dict] = {
     ),
     "vwap": _m(
         "VWAP", "technical",
-        "The average price paid, weighted by volume. Daily charts start at the first trading day of the current year. Intraday charts restart every session.",
+        "The average price paid, weighted by volume. Daily charts start at the first trading day of the current year. Intraday charts restart every session and count regular hours only, so pre-market and after-hours bars have no VWAP.",
         "Price above VWAP means the average buyer in that period is in profit. It often acts as support or resistance.",
         "Sum of (typical price x volume) / sum of volume since the anchor.", YAHOO,
     ),
@@ -1285,5 +1286,21 @@ METRICS: dict[str, dict] = {
         "Lets you see how the stock has reacted to earnings in the past.",
         "Dates of the last 12 reports and the next expected one.",
         "Yahoo Finance earnings data",
+    ),
+    # ------------------------------------------------------- pre-market & after hours
+    "extended_hours": _m(
+        "Pre-market and after-hours price", "hours",
+        "Stocks and ETFs also trade outside the regular 9:30 to 16:00 ET session: pre-market from 4:00 and after hours until 20:00 ET. This is the latest such trade, with its change against the last regular close. Pre-market compares with the previous day's close, after hours with that same day's close.",
+        "Big moves usually follow news, such as earnings released before the open or after the close. Treat them as a first reaction: volume is thin and spreads are wide, so a few orders can move the price, and moves often shrink or reverse once the regular session opens. The price shows up only outside regular hours, and it can be from the previous evening if nothing has traded since.",
+        "Latest 5-minute bar outside regular hours, minus the official close of the last regular session. In Chart Lab, intraday charts show these bars on a gray band.",
+        "Yahoo Finance extended-hours bars, about 15 minutes delayed, refreshed every 3 minutes while a page is open",
+        "Most of this dashboard stays on regular-session data outside market hours: Market Health, breadth, signals, rotation and backtests use daily closes, and option chains and gamma only update when options trade (9:30 to 16:15 ET). Indices such as the S&P 500 itself have no pre-market price; use the index futures instead.",
+    ),
+    "index_futures": _m(
+        "Index futures", "hours",
+        "Futures on the S&P 500 (ES), Nasdaq 100 (NQ), Russell 2000 (RTY) and Dow (YM). They trade nearly around the clock, from Sunday 18:00 to Friday 17:00 ET with a short daily break, so they show how the market is leaning before stocks open.",
+        "A move of more than about 1% overnight points to a gap at the open. Compare the four: Russell up while Nasdaq lags hints at rotation into small caps. Overnight trading is thinner than the day session, so early moves can fade.",
+        "Latest futures price against the futures price at the last 4pm ET stock-market close, so the change lines up with the stocks. Futures trade at a small premium to the index (interest minus dividends), so the level differs from the index, but the change is comparable.",
+        "Yahoo Finance futures prices (CME), about 10 to 15 minutes delayed",
     ),
 }

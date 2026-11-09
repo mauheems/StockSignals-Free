@@ -314,7 +314,7 @@ def scenario_overview(run: Run) -> None:
     if "overview" in page.url:
         run.problem("pillar row did not open its page")
     run.visit("overview")
-    run.click(page.locator("a.tile").first, "index tile")
+    run.click(page.locator("a.tile[href^='#/stock/']").first, "index tile")
     run.settle()
     if "#/stock/" not in page.url:
         run.problem("index tile did not open the stock page")
@@ -758,6 +758,60 @@ def scenario_alerts(run: Run) -> None:
         run.problem("alerts were not restored after the test")
 
 
+def scenario_extended(run: Run) -> None:
+    """Pre-market, after-hours and futures prices. Only checkable outside regular hours."""
+    page = run.page
+    page.goto(f"{BASE}/")
+    market = json.loads(page.evaluate("() => fetch('/api/market').then((r) => r.text())"))
+    if market["state"] == "open":
+        print("    market is open: extended prices are hidden by design, skipping", flush=True)
+        run.visit("chart/SPY")
+        return
+    run.visit("overview")
+    page.wait_for_selector("text=index futures", timeout=30000)
+    if page.locator("#content a.tile[href^='#/chart/ES']").count() != 1:
+        run.problem("overview has no S&P 500 futures tile")
+    run.check_page("overview futures")
+    if SHOTS:
+        page.locator("#content").screenshot(path=f"{SHOTS}/ext_overview.png")
+    run.visit("watchlist")
+    page.wait_for_selector("th:has-text('Ext. hours')", timeout=30000)
+    run.check_page("watchlist extended column")
+    if SHOTS:
+        page.screenshot(path=f"{SHOTS}/ext_watchlist.png")
+    run.visit("stock/NVDA")
+    page.wait_for_selector(".ext-line .ext-tag", timeout=30000)
+    run.check_page("stock extended line")
+    if SHOTS:
+        page.screenshot(path=f"{SHOTS}/ext_stock.png")
+    run.visit("chart/NVDA")
+    run.click(page.locator(".segmented button:has-text('15 min')"), "interval 15 min")
+    run.settle(200)
+    toggle = page.locator(".lab-panel label:has-text('Pre-market and after hours') input")
+    if not toggle.count():
+        run.problem("intraday chart has no extended-hours toggle")
+        return
+    if not toggle.is_checked():
+        run.click(toggle, "extended hours on")
+        run.settle(200)
+    sub = page.locator("figure .card-sub")
+    if "Gray bands" not in sub.inner_text():
+        run.problem("intraday chart with extended hours does not mention the gray bands")
+    if SHOTS:
+        page.screenshot(path=f"{SHOTS}/ext_chart.png")
+    run.click(toggle, "extended hours off")
+    run.settle(200)
+    if "Gray bands" in sub.inner_text():
+        run.problem("switching extended hours off kept the gray bands")
+    run.click(toggle, "extended hours back on")
+    run.settle(200)
+    run.click(page.locator(".segmented button:has-text('Daily')"), "back to daily")
+    run.settle(200)
+    if page.locator(".lab-panel label:has-text('Pre-market and after hours')").count():
+        run.problem("daily chart still offers the extended-hours toggle")
+    run.ok()
+
+
 def scenario_sources(run: Run) -> None:
     run.visit("sources")
     page = run.page
@@ -805,7 +859,7 @@ def main() -> int:
         scenarios = [
             scenario_shell, scenario_overview, scenario_rotation, scenario_options, scenario_watchlist,
             scenario_scanner, scenario_stock, scenario_chart, scenario_backtest, scenario_study,
-            scenario_guide, scenario_alerts, scenario_sources,
+            scenario_guide, scenario_alerts, scenario_extended, scenario_sources,
         ]
         for scenario in scenarios:
             name = scenario.__name__.removeprefix("scenario_")
