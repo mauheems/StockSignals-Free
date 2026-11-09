@@ -656,8 +656,11 @@ def scenario_chart(run: Run) -> None:
             run.check_page(f"{interval} range {position}")
     page.locator("[aria-label='Date range'] button:has-text('1Y')").click()
     run.settle()
-    # Price as a line, then back to candles.
-    run.click(page.locator("[aria-label='Price style'] button:has-text('Line')"), "price as a line")
+    # Price as a line, then back to candles. The page sweep may have left it on Line already.
+    line = page.locator("[aria-label='Price style'] button:has-text('Line')")
+    if "is-active" in (line.get_attribute("class") or ""):
+        run.click(page.locator("[aria-label='Price style'] button:has-text('Candles')"), "price as candles first")
+    run.click(line, "price as a line")
     run.check_page("price as a line")
     if "closing price" not in page.locator(".lab-chart-note").inner_text():
         run.problem("the chart note still describes candles in line mode")
