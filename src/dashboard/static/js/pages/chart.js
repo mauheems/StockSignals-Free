@@ -66,6 +66,7 @@ const DEFAULTS = {
   overlays: { sma50: true, sma200: true },
   marks: { crosses: true, extended: true },
   panes: { volume: true },
+  volumeColor: "candle",
   signals: [],
   shades: [],
   style: "candles",
@@ -436,7 +437,11 @@ export default {
               name: "Volume",
               type: "bar",
               values: d.volume,
-              barColor: (index) => (d.close[index] >= d.open[index] ? c.up : c.down),
+              // Like the candle (close against the open), or against the previous bar's close.
+              barColor: (index) => {
+                const base = state.volumeColor === "prev" && index > 0 ? d.close[index - 1] : d.open[index];
+                return d.close[index] >= base ? c.up : c.down;
+              },
             }],
           };
         case "rvol":
@@ -970,7 +975,13 @@ export default {
           signalPanel,
           shadePanel,
           h("section", { class: "card" }, panelTitle("On the price"), overlaysBox, h("div", { style: { marginTop: "6px" } }, marksBox)),
-          h("section", { class: "card" }, panelTitle("Lower panes"), panesBox))));
+          h("section", { class: "card" }, panelTitle("Lower panes"), panesBox,
+            h("div", { style: { marginTop: "8px" } }, field("Volume bar colour", segmented(
+              [{ value: "candle", label: "Like the candle" }, { value: "prev", label: "Vs previous close" }],
+              state.volumeColor,
+              (value) => { state.volumeColor = value; save(); draw(); },
+              "Volume bar colour",
+            ), "volume_bars"))))));
 
     await load();
     const extendedTimer = setInterval(loadExtendedQuote, 3 * 60 * 1000);

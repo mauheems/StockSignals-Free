@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import re
 from typing import Iterable
 
 import numpy as np
@@ -13,11 +14,16 @@ from src.analytics import options as option_analytics
 from src.analytics import rotation as rotation_analytics
 from src.analytics import signals as sig
 from src.analytics import stocks as stock_analytics
+from src.analytics import brief as brief_builder
+from src.analytics import checklist as checklist_rules
+from src.analytics import events as event_views
+from src.analytics import portfolio as portfolio_analytics
 from src.analytics import technicals as ta
+from src.analytics import timeline as timeline_view
 from src.analytics.signals import Ctx
 from src.analytics.studies import Condition, HORIZONS, condition_coverage, condition_mask, forward_return_study
 from src.backtest.engine import BacktestEngine
-from src.data import cboe, fundamentals
+from src.data import cboe, extended, filings as filing_data, fundamentals
 from src.data.catalog import (
     CORE_NAMES,
     INDICES,
@@ -146,8 +152,13 @@ def _odds_note(event: dict, board: dict, earnings: dict) -> dict | None:
     if label.startswith("FOMC") and board.get("fed") and _near(event["date"], board["fed"]["date"]):
         fed = board["fed"]
         return {"text": f"{fed['likely']} {round(fed['likely_prob'] * 100)}%", "metric": "fed_odds"}
-    if label.startswith("CPI") and board.get("cpi") and _near(event["date"], board["cpi"]["release"]):
-        return {"text": f"expected {board['cpi']['median']:.1f}%", "metric": "pm_cpi"}
+    if label.startswith("CPI"):
+        # The monthly change trades most; the yearly rate is the fallback.
+        monthly, yearly = board.get("cpi_mom"), board.get("cpi")
+        if monthly and monthly.get("median") is not None and _near(event["date"], monthly["release"]):
+            return {"text": f"expected {monthly['median']:+.1f}% on the month", "metric": "pm_cpi_mom"}
+        if yearly and yearly.get("median") is not None and _near(event["date"], yearly["release"]):
+            return {"text": f"expected {yearly['median']:.1f}% on the year", "metric": "pm_cpi"}
     if label.startswith("Jobs report") and board.get("unemployment") and _near(event["date"], board["unemployment"]["release"]):
         return {"text": f"unemployment expected {board['unemployment']['median']:.1f}%", "metric": "pm_unemployment"}
     odds = earnings.get(event.get("symbol") or "")
@@ -160,7 +171,7 @@ def _catalysts(store: Store, limit: int = 12) -> list[dict]:
     today = now_et().date()
     events = list(store.kv_get("events:macro", []))
     events.extend(upcoming_expirations(today))
-    for symbol in store.watchlist():
+    for symbol in dict.fromkeys([*store.watchlist(), *store.position_symbols()]):
         details = store.kv_get(f"fund:{symbol}")
         if details and details.get("next_earnings"):
             events.append({"date": details["next_earnings"], "label": f"{symbol} earnings", "kind": "earnings", "metric": "next_earnings", "symbol": symbol})
@@ -577,15 +588,9 @@ def macro(ctx: Ctx, range_key: str) -> dict:
         "breakeven10y", "fed_funds", "dxy", "oil", "gold", "copper", "copper_gold", "net_liquidity", "claims", "unrate",
         "sahm", "cpi_yoy", "core_cpi_yoy", "core_pce_yoy", "hyg_ief",
     ]
-    board = ctx.store.kv_get("pm:board") or {}
     return {
         "market": market_state(),
         "rows": _rows(ctx, ids),
-        "prediction": {
-            "board": board,
-            "rows": _rows(ctx, ["pm_fed_hike", "pm_fed_cut", "pm_recession", "pm_cpi", "pm_unemployment"]),
-            "history": table_payload({"hike": ctx.signal("pm_fed_hike"), "cut": ctx.signal("pm_fed_cut"), "recession": ctx.signal("pm_recession")}, "1y", digits=1),
-        },
         "curve": {"today": _curve_on(ctx, 0), "month_ago": _curve_on(ctx, 30), "year_ago": _curve_on(ctx, 365)},
         "charts": {
             "yields": table_payload({"y10": ctx.signal("dgs10"), "y2": ctx.signal("dgs2"), "ff": ctx.signal("fed_funds")}, range_key, digits=2),
@@ -601,6 +606,42 @@ def macro(ctx: Ctx, range_key: str) -> dict:
             "inflation": table_payload({"cpi": ctx.signal("cpi_yoy"), "core_cpi": ctx.signal("core_cpi_yoy"), "core_pce": ctx.signal("core_pce_yoy")}, range_key, digits=2),
             "unemployment": table_payload({"unrate": ctx.signal("unrate"), "sahm": ctx.signal("sahm")}, range_key, digits=2),
         },
+    }
+
+
+# ------------------------------------------------------------------ prediction markets
+# Economic numbers traded on Kalshi, in the order the page shows them, with their guide entry.
+PREDICTION_INDICATORS = [
+    ("cpi_mom", "pm_cpi_mom"), ("core_cpi_mom", "pm_core_cpi_mom"), ("cpi", "pm_cpi"),
+    ("unemployment", "pm_unemployment"), ("payrolls", "pm_payrolls"), ("gdp", "pm_gdp"),
+]
+
+
+def prediction(store: Store, ctx: Ctx) -> dict:
+    from src.data.prediction_markets import LADDERS
+
+    board = store.kv_get("pm:board") or {}
+    watchlist = set(store.watchlist())
+    earnings = []
+    for row in (store.kv_get("pm:earnings") or {}).values():
+        name = re.match(r"Will (.+?) \(", row.get("question") or "")
+        earnings.append({**row, "name": name.group(1) if name else row["symbol"], "in_watchlist": row["symbol"] in watchlist})
+    earnings.sort(key=lambda row: (row["date"], -row["volume"]))
+    indicators = []
+    for key, metric in PREDICTION_INDICATORS:
+        series, label, unit, fmt, discrete = LADDERS[key]
+        indicators.append({"key": key, "metric": metric, "label": label, "unit": unit, "fmt": fmt, "reading": board.get(key)})
+    return {
+        "market": market_state(),
+        "updated": board.get("updated"),
+        "fed": board.get("fed"),
+        "fed_path": board.get("fed_path") or [],
+        "recession": board.get("recession") or [],
+        "recession_next": board.get("recession_next"),
+        "indicators": indicators,
+        "rows": _rows(ctx, ["pm_fed_hike", "pm_fed_cut", "pm_recession", "pm_cpi", "pm_unemployment"]),
+        "history": table_payload({"hike": ctx.signal("pm_fed_hike"), "cut": ctx.signal("pm_fed_cut"), "recession": ctx.signal("pm_recession")}, "1y", digits=1),
+        "earnings": earnings,
     }
 
 
@@ -699,6 +740,17 @@ def stock_page(store: Store, ctx: Ctx, symbol: str) -> dict:
         short_pct=info.get("shortPercentOfFloat"),
     )
     underlying = cboe.option_symbol(target)
+    history = sig.pillar_history(ctx, lagged=False)
+    health = history["health"].dropna() if "health" in history else pd.Series(dtype=float)
+    checks = checklist_rules.build(
+        snapshot,
+        next_earnings=(details or {}).get("next_earnings"),
+        option=store.kv_get(f"opt:summary:{underlying}"),
+        short_pct=info.get("shortPercentOfFloat"),
+        health=float(health.iloc[-1]) if not health.empty else None,
+        beat_odds=(store.kv_get("pm:earnings") or {}).get(target),
+        today=now_et().date(),
+    )
     return {
         "symbol": target,
         "name": _symbol_name(store, target),
@@ -710,6 +762,13 @@ def stock_page(store: Store, ctx: Ctx, symbol: str) -> dict:
         "option_underlying": underlying,
         "earnings_odds": (store.kv_get("pm:earnings") or {}).get(target),
         "dark_pool": stock_analytics.dark_pool_summary(store.get_short_volume(target)),
+        "checklist": checks,
+        "checklist_summary": checklist_rules.summary(checks),
+        "note": store.note(target),
+        "tags": store.tags_by_symbol().get(target, []),
+        "all_tags": store.tag_names(),
+        "positions": [row for row in portfolio_analytics.valuation(store, ctx)["rows"] if row["symbol"] == target] if target in store.position_symbols() else [],
+        "journal": [row for row in store.journal() if row["symbol"] == target][:5],
     }
 
 
@@ -739,6 +798,8 @@ def watchlist_rows(store: Store, ctx: Ctx) -> list[dict]:
     rows = []
     benchmark = _benchmark(ctx)
     earnings_odds = store.kv_get("pm:earnings") or {}
+    tags = store.tags_by_symbol()
+    notes = store.notes()
     for symbol in store.watchlist():
         frame = store.get_prices(symbol)
         if frame.empty:
@@ -757,6 +818,8 @@ def watchlist_rows(store: Store, ctx: Ctx) -> list[dict]:
             "symbol": symbol,
             "name": _symbol_name(store, symbol),
             "earnings_beat": odds["prob"] if odds else None,
+            "tags": tags.get(symbol, []),
+            "note": notes[symbol]["text"] if symbol in notes else None,
             "last": snapshot.get("last"),
             "change_pct": snapshot.get("change_pct"),
             "ret_5d": snapshot.get("ret_5d"),
@@ -1192,3 +1255,68 @@ def _validate_date(value: str, label: str) -> None:
         dt.date.fromisoformat(value)
     except ValueError as exc:
         raise ValueError(f"{label} must look like YYYY-MM-DD.") from exc
+
+
+# ----------------------------------------------------------------- your own pages
+
+def brief(store: Store, ctx: Ctx) -> dict:
+    """The few sentences at the top of the Overview."""
+    market = market_state()
+    futures = extended.futures_board(store) if market["state"] != "open" else []
+    watched = store.watchlist()
+    if market["state"] == "open":
+        movers = []
+        for symbol in watched:
+            closes = store.get_prices(symbol)["Close"].dropna()
+            if len(closes) > 1:
+                movers.append({"symbol": symbol, "change_pct": float(closes.iloc[-1] / closes.iloc[-2] - 1.0) * 100.0})
+    else:
+        movers = list(extended.extended_quotes(store, watched).values())
+    movers = [row for row in movers if abs(row["change_pct"]) >= 1.0]
+    movers.sort(key=lambda row: abs(row["change_pct"]), reverse=True)
+    totals = portfolio_analytics.valuation(store, ctx)["totals"] if store.positions() else None
+    result = brief_builder.build(store, ctx, market, futures, movers, _catalysts(store, limit=40), totals)
+    result["market"] = market
+    return result
+
+
+def portfolio_page(store: Store, ctx: Ctx) -> dict:
+    result = portfolio_analytics.valuation(store, ctx)
+    held = set(store.position_symbols())
+    result["catalysts"] = [event for event in _catalysts(store, limit=60) if event.get("symbol") in held]
+    result["market"] = market_state()
+    return result
+
+
+def journal_page(store: Store, ctx: Ctx) -> dict:
+    result = portfolio_analytics.journal_view(store, ctx)
+    result["symbols"] = list(dict.fromkeys([*store.position_symbols(), *store.watchlist()]))
+    return result
+
+
+def earnings_page(store: Store) -> dict:
+    members = {row["symbol"] for row in load_sp500(store).to_dict("records")} if not load_sp500(store).empty else set()
+    result = event_views.earnings_season(store, members)
+    result["market"] = market_state()
+    return result
+
+
+def calendar_page(store: Store) -> dict:
+    result = event_views.economic_calendar(store)
+    today = now_et().date()
+    result["expirations"] = [item for item in upcoming_expirations(today) if item["date"] <= (today + dt.timedelta(days=75)).isoformat()]
+    result["market"] = market_state()
+    return result
+
+
+def timeline_page(ctx: Ctx, date: str | None) -> dict:
+    if date:
+        _validate_date(date, "Date")
+    return timeline_view.at(ctx, date)
+
+
+def stock_filings(store: Store, symbol: str) -> dict:
+    target = price_symbol(symbol)
+    result = filing_data.get_filings(store, target)
+    since = (now_et().date() - dt.timedelta(days=183)).isoformat()
+    return {**result, "summary": filing_data.insider_summary(result.get("trades", []), since)}

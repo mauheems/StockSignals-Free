@@ -4,7 +4,7 @@ import { chartCard, lineChart, rankedBars } from "../lib/charts.js";
 import { MISSING, fmt, fmtDate, h, replace } from "../lib/dom.js";
 import { info } from "../lib/guide.js";
 import { signalOptions } from "../lib/rules.js";
-import { dataTable, deltaSpan, emptyBox, field, fillSelect, filters, pageHead, scoreBadge, segmented, sparkline, statusBadge, tile, toast } from "../lib/ui.js";
+import { dataTable, dateMark, deltaSpan, emptyBox, field, fillSelect, filters, pageHead, scoreBadge, segmented, sparkline, statusBadge, tile, toast } from "../lib/ui.js";
 import { timeText } from "./alerts.js";
 
 function alertsCard(data) {
@@ -82,6 +82,22 @@ function quoteTile(item) {
     foot: h("span", {}, foot.join(" · ")),
     href: `#/stock/${encodeURIComponent(item.symbol)}`,
   });
+}
+
+const BRIEF_ICONS = { good: "▲", bad: "▼", neutral: "●" };
+
+/** A few plain sentences: what changed, and what matters today. */
+function briefCard(brief) {
+  return h("section", { class: "card brief", id: "brief" },
+    h("div", { class: "card-head" },
+      h("h3", { class: "card-title" }, `${brief.title}: your brief`, info("morning_brief")),
+      h("span", { class: "sub-text" }, brief.market?.time_et || "")),
+    brief.lines.length
+      ? h("ul", { class: "brief-list" }, brief.lines.map((line) => h("li", { class: `brief-line tone-${line.tone}` },
+        h("span", { class: "brief-icon", "aria-hidden": "true" }, BRIEF_ICONS[line.tone] || BRIEF_ICONS.neutral),
+        h("span", {}, line.text, line.metric ? info(line.metric) : null,
+          line.link ? h("a", { href: line.link, class: "brief-more" }, "More") : null))))
+      : emptyBox("Nothing stands out yet. The brief fills in as data loads."));
 }
 
 const FUTURES_TITLES = { pre: "Before the open", post: "After the close", closed: "While the market is closed" };
@@ -191,7 +207,7 @@ const SIGNAL_COLUMNS = [
   { key: "score", label: "State", render: (row) => scoreBadge(row.score, row.pillar === "crowd"), value: (row) => row.score },
   { key: "change_1w", label: "1-week change", render: (row) => deltaSpan(fmt(Math.abs(row.change_1w ?? 0), row.fmt.replace(/^s/, "")), row.change_1w, row.higher_is) },
   { key: "pctile_1y", label: "1-year rank", render: (row) => (row.pctile_1y === null ? MISSING : `${Math.round(row.pctile_1y)}%`) },
-  { key: "date", label: "As of", render: (row) => fmtDate(row.date), value: (row) => row.date },
+  { key: "date", label: "As of", metric: "data_age", render: (row) => dateMark(row), value: (row) => row.date },
   { key: "spark", label: "Trend", sortable: false, render: (row) => h("div", { class: "spark-cell" }, sparkline(row.spark, { width: 80, height: 20 })) },
 ];
 
@@ -212,6 +228,14 @@ export default {
     const gammaBox = h("div", {});
     const alertsBox = h("div", {});
     const futuresBox = h("div", {});
+    const briefBox = h("div", {});
+    const loadBrief = async () => {
+      try {
+        replace(briefBox, briefCard(await api.get("/api/brief")));
+      } catch {
+        replace(briefBox);
+      }
+    };
     let last = null;
 
     // Futures move while no other data refreshes, so they poll on their own schedule.
@@ -420,8 +444,9 @@ export default {
 
     replace(root,
       pageHead("Market overview", "Where the US market stands now, what changed recently and what's coming up. Select any info button for an explanation."),
+      briefBox,
       futuresBox,
-      h("div", { class: "split-1-2" }, heroBox, pillarsBox),
+      h("div", { class: "split-1-2 mt" }, heroBox, pillarsBox),
       tilesBox,
       h("div", { class: "split-2-1 mt", style: { alignItems: "start" } }, signalsBox, sideBox),
       h("div", { class: "section-title" }, "Market snapshot"),
@@ -431,13 +456,18 @@ export default {
       }, "Sector performance period"))),
       h("div", { class: "grid grid-3" }, spxChart.el, sectorChart.el, gammaBox));
 
+    loadBrief();
     loadFutures();
     draw(await api.get("/api/overview"));
     await loadAlerts();
     // Started only once the page has loaded, so a failed load can't leave a timer behind.
-    const futuresTimer = setInterval(loadFutures, 3 * 60 * 1000);
+    const futuresTimer = setInterval(() => {
+      loadFutures();
+      loadBrief();
+    }, 3 * 60 * 1000);
     return {
       refresh: async () => {
+        loadBrief();
         draw(await api.get("/api/overview"));
         await loadAlerts();
       },

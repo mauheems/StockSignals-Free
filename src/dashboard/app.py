@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
+import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -16,10 +18,11 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from src.analytics import alerts as alert_logic
+from src.analytics import portfolio as portfolio_analytics
 from src.analytics.signals import SELF_SIGNALS, Ctx
 from src.dashboard import payloads
 from src.dashboard.metric_guide import GUIDE_CATEGORIES, METRICS
-from src.data import cboe, extended, fundamentals, macro_sources, refresh
+from src.data import backup, cboe, extended, fundamentals, macro_sources, refresh
 from src.data.catalog import normalize_symbol
 from src.data.market_data import SymbolNotFound, ensure_prices
 from src.data.store import Store
@@ -57,6 +60,13 @@ class PayloadCache:
         return value
 
 
+def _forget(cache: PayloadCache, *names: str) -> None:
+    """Drop cached pages after a change that the data version doesn't track (tags, notes, positions)."""
+    with cache._lock:
+        for key in [key for key in cache._items if key[0] in names]:
+            cache._items.pop(key, None)
+
+
 class Services:
     def __init__(self, store: Store, *, background: bool):
         self.store = store
@@ -67,6 +77,8 @@ class Services:
         self._ctx: Ctx | None = None
         self._ctx_lock = threading.Lock()
         self._alert_stop = threading.Event()
+        # Pages rebuilt in the background as soon as new data arrives, so they open instantly.
+        self.warmers: list[Callable[[], object]] = []
         self._alert_thread: threading.Thread | None = None
 
     def start_alert_checks(self) -> None:
@@ -81,6 +93,11 @@ class Services:
                         alert_logic.evaluate_all(self.store, self.ctx())
                     except Exception:
                         logger.exception("Checking alerts failed")
+                    for warm in self.warmers:
+                        try:
+                            warm()
+                        except Exception as exc:  # a page that fails here simply computes on its next visit
+                            logger.debug("Preparing a page failed: %s", exc)
                 self._alert_stop.wait(10)
 
         self._alert_thread = threading.Thread(target=loop, name="alert-checks", daemon=True)
@@ -206,6 +223,9 @@ def create_app(store: Store | None = None, *, background: bool = True) -> FastAP
     def overview_signals_reset():
         return {"ids": payloads.reset_overview_signals(store), "custom": False}
 
+    # The most visited pages are prepared whenever new data arrives (see Services.start_alert_checks).
+    services.warmers = [overview, lambda: watchlist()]
+
     @app.get("/api/breadth")
     def breadth(range: str = "1y"):
         return services.cached("breadth", range, compute=lambda: payloads.breadth(store, services.ctx(), range))
@@ -229,6 +249,10 @@ def create_app(store: Store | None = None, *, background: bool = True) -> FastAP
     @app.get("/api/macro")
     def macro(range: str = "2y"):
         return services.cached("macro", range, compute=lambda: payloads.macro(services.ctx(), range))
+
+    @app.get("/api/prediction")
+    def prediction():
+        return services.cached("prediction", tuple(store.watchlist()), compute=lambda: payloads.prediction(store, services.ctx()))
 
     @app.get("/api/options/underlyings")
     def option_underlyings():
@@ -352,6 +376,198 @@ def create_app(store: Store | None = None, *, background: bool = True) -> FastAP
         if not store.alert_delete(alert_id):
             raise HTTPException(status_code=404, detail="That alert no longer exists.")
         return {"deleted": alert_id}
+
+    # -------------------------------------------------------------- morning brief
+    @app.get("/api/brief")
+    def brief():
+        return services.cached("brief", compute=lambda: payloads.brief(store, services.ctx()), ttl=120)
+
+    # ------------------------------------------------------------------ positions
+    def number(body: dict, key: str, *, required: bool = False, positive: bool = False) -> float | None:
+        raw = body.get(key)
+        if raw in (None, ""):
+            if required:
+                raise HTTPException(status_code=400, detail=f"Enter the {key.replace('_', ' ')}.")
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"The {key.replace('_', ' ')} must be a number.") from exc
+        if not math.isfinite(value) or (positive and value <= 0):
+            raise HTTPException(status_code=400, detail=f"The {key.replace('_', ' ')} must be above zero.")
+        return value
+
+    def day(body: dict, key: str, default: str | None = None) -> str | None:
+        raw = str(body.get(key) or "").strip()
+        if not raw:
+            return default
+        try:
+            return dt.date.fromisoformat(raw).isoformat()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Dates must look like YYYY-MM-DD.") from exc
+
+    def changed_own_data() -> None:
+        _forget(services.cache, "brief", "watchlist", "stock")
+
+    @app.get("/api/portfolio")
+    def portfolio():
+        return payloads.portfolio_page(store, services.ctx())
+
+    @app.post("/api/positions")
+    def position_add(body: dict = Body(...)):
+        symbol = payloads.price_symbol(_symbol(str(body.get("symbol", ""))))
+        ensure_prices(store, symbol)
+        position_id = store.position_add(
+            symbol,
+            number(body, "shares", required=True, positive=True),
+            number(body, "cost", required=True, positive=True),
+            day(body, "opened"),
+            number(body, "stop", positive=True),
+            number(body, "target", positive=True),
+            str(body.get("note") or "")[:300] or None,
+        )
+        services.side_jobs.submit(services.prepare_new_symbol, symbol)
+        changed_own_data()
+        return store.position(position_id)
+
+    @app.patch("/api/positions/{position_id}")
+    def position_edit(position_id: int, body: dict = Body(...)):
+        fields = {}
+        for key, positive in (("shares", True), ("cost", True), ("stop", True), ("target", True)):
+            if key in body:
+                fields[key] = number(body, key, required=key in ("shares", "cost"), positive=positive)
+        if "opened" in body:
+            fields["opened"] = day(body, "opened")
+        if "note" in body:
+            fields["note"] = str(body.get("note") or "")[:300] or None
+        if not store.position_update(position_id, **fields):
+            raise HTTPException(status_code=404, detail="That position no longer exists.")
+        changed_own_data()
+        return store.position(position_id)
+
+    @app.delete("/api/positions/{position_id}")
+    def position_remove(position_id: int):
+        if not store.position_delete(position_id):
+            raise HTTPException(status_code=404, detail="That position no longer exists.")
+        changed_own_data()
+        return {"deleted": position_id}
+
+    @app.post("/api/positions/order")
+    def positions_order(body: dict = Body(...)):
+        ids = body.get("ids")
+        if not isinstance(ids, list) or not all(isinstance(item, int) and not isinstance(item, bool) for item in ids):
+            raise HTTPException(status_code=400, detail="Send the order as a list of position ids.")
+        return {"ids": store.positions_reorder(ids)}
+
+    # -------------------------------------------------------------------- journal
+    @app.get("/api/journal")
+    def journal():
+        return payloads.journal_page(store, services.ctx())
+
+    @app.post("/api/journal")
+    def journal_add(body: dict = Body(...)):
+        action = str(body.get("action", ""))
+        if action not in ("buy", "sell", "note"):
+            raise HTTPException(status_code=400, detail="Choose whether you bought, sold or are just writing a note.")
+        symbol = payloads.price_symbol(_symbol(str(body.get("symbol", ""))))
+        ensure_prices(store, symbol)
+        reason = str(body.get("reason") or "").strip()[:4000]
+        if not reason:
+            raise HTTPException(status_code=400, detail="Write down why: that is what makes the journal useful later.")
+        trade = action in ("buy", "sell")
+        shares = number(body, "shares", required=trade, positive=True)
+        price = number(body, "price", required=trade, positive=True)
+        when = day(body, "date", dt.date.today().isoformat())
+        message = None
+        if trade and body.get("update_positions"):
+            try:
+                message = portfolio_analytics.apply_trade(store, symbol, action, shares, price)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        snapshot = portfolio_analytics.signal_snapshot(store, services.ctx(), symbol)
+        entry_id = store.journal_add(when, symbol, action, shares, price, reason, snapshot)
+        changed_own_data()
+        return {"entry": store.journal_entry(entry_id), "positions": message}
+
+    @app.patch("/api/journal/{entry_id}")
+    def journal_edit(entry_id: int, body: dict = Body(...)):
+        reason = str(body.get("reason") or "").strip()[:4000]
+        if not reason:
+            raise HTTPException(status_code=400, detail="The reason can't be empty.")
+        if not store.journal_update(entry_id, reason):
+            raise HTTPException(status_code=404, detail="That journal entry no longer exists.")
+        return store.journal_entry(entry_id)
+
+    @app.delete("/api/journal/{entry_id}")
+    def journal_remove(entry_id: int):
+        if not store.journal_delete(entry_id):
+            raise HTTPException(status_code=404, detail="That journal entry no longer exists.")
+        return {"deleted": entry_id}
+
+    # -------------------------------------------------------------- tags and notes
+    def tag_name(raw) -> str:
+        tag = " ".join(str(raw or "").split())[:30]
+        if not tag:
+            raise HTTPException(status_code=400, detail="Give the list a name.")
+        return tag
+
+    @app.post("/api/tags")
+    def tag_add(body: dict = Body(...)):
+        symbol = payloads.price_symbol(_symbol(str(body.get("symbol", ""))))
+        store.tag_add(symbol, tag_name(body.get("tag")))
+        changed_own_data()
+        return {"symbol": symbol, "tags": store.tags_by_symbol().get(symbol, []), "all": store.tag_names()}
+
+    @app.post("/api/tags/remove")
+    def tag_remove(body: dict = Body(...)):
+        symbol = payloads.price_symbol(_symbol(str(body.get("symbol", ""))))
+        store.tag_remove(symbol, tag_name(body.get("tag")))
+        changed_own_data()
+        return {"symbol": symbol, "tags": store.tags_by_symbol().get(symbol, []), "all": store.tag_names()}
+
+    @app.post("/api/notes/{symbol}")
+    def note_save(symbol: str, body: dict = Body(...)):
+        target = payloads.price_symbol(_symbol(symbol))
+        store.note_set(target, str(body.get("text") or "")[:5000])
+        changed_own_data()
+        return {"symbol": target, "note": store.note(target)}
+
+    # ------------------------------------------------------------- backup and restore
+    @app.get("/api/backup")
+    def backup_export():
+        return backup.export(store)
+
+    @app.post("/api/backup/restore")
+    def backup_restore(body: dict = Body(...)):
+        mode = body.get("mode", "merge")
+        if mode not in ("merge", "replace"):
+            raise HTTPException(status_code=400, detail="Choose to merge or replace.")
+        counts = backup.restore(store, body.get("data"), replace=mode == "replace")
+        store.bump_version()
+        return {"restored": counts}
+
+    @app.get("/api/settings/storage")
+    def storage():
+        size = store.path.stat().st_size if store.path.exists() else 0
+        wal = Path(f"{store.path}-wal")
+        return {"path": str(store.path.resolve()), "bytes": size + (wal.stat().st_size if wal.exists() else 0)}
+
+    # -------------------------------------------------------------- calendars, timeline
+    @app.get("/api/earnings")
+    def earnings():
+        return services.cached("earnings", tuple(store.watchlist()), tuple(store.position_symbols()), compute=lambda: payloads.earnings_page(store))
+
+    @app.get("/api/calendar")
+    def calendar():
+        return services.cached("calendar", compute=lambda: payloads.calendar_page(store))
+
+    @app.get("/api/timeline")
+    def timeline(date: str = Query(default="", max_length=10)):
+        return services.cached("timeline", date, compute=lambda: payloads.timeline_page(services.ctx(), date or None))
+
+    @app.get("/api/stock/{symbol}/filings")
+    def stock_filings(symbol: str):
+        return payloads.stock_filings(store, _symbol(symbol))
 
     @app.get("/api/scanner")
     def scanner():

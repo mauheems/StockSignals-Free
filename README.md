@@ -43,21 +43,27 @@ I've only run it on Linux so far. Mac and Windows should work, but they're untes
 
 | Page | The question it answers |
 |---|---|
-| **Overview** | How healthy is the market right now, what just changed, and what's coming up? Before the open, index futures show where things are heading. Choose and order the Key signals you care about |
+| **Overview** | A short brief on what changed and what matters today, then how healthy the market is and what's coming up. Before the open, index futures show where things are heading. Choose and order the Key signals you care about |
 | **Trend & Breadth** | Are the indices trending, and are most stocks actually taking part? 50/200-day averages, McClellan, new highs and lows |
 | **Rotation** | Where is money moving? Rotation map, sector performance, risk-on and risk-off ratios |
 | **Volatility** | How much movement is expected, and how stressed is that? VIX curve, realized vs implied, VVIX, SKEW, MOVE |
 | **Options & Gamma** | Where are positions stacked up? Dealer gamma by strike, gamma flip, call and put walls, max pain, skew, expected move, unusual activity, for any optionable ticker |
 | **Flows & Sentiment** | Is the crowd scared or greedy? Put/call ratios, dark pool index, Fear & Greed, AAII, futures positioning |
-| **Macro & Credit** | Does the backdrop support stocks? Yield curve, credit spreads, liquidity, inflation, jobs, and what prediction markets bet on the next Fed decision, a recession and the next inflation number |
+| **Macro & Credit** | Does the backdrop support stocks? Yield curve, credit spreads, liquidity, inflation, jobs |
+| **Earnings Season** | Who reports when, how big a move the options market expects, and how that compares with the stock's usual reaction |
+| **Economic Calendar** | The reports and Fed meetings that move markets, what traders expect for each, and how past releases surprised |
+| **Prediction Markets** | What are people betting real money on? Odds for every coming Fed meeting, a recession, the next CPI, jobs and GDP numbers, and whether companies beat their earnings, from Kalshi and Polymarket |
 
 **Look at your own stocks**
 
 | Page | What it's for |
 |---|---|
 | **Watchlist** | Add any ticker and see all its signals side by side, including pre-market and after-hours prices outside regular hours. Drag stocks into your own order, or sort by any column and keep that order |
-| **Alerts** | Get a notification when a stock or a market signal crosses a level you pick, for example "NVDA below $180" or "VIX above 30". Spot something on any page? The Alerts button in the top bar opens a side panel that starts from what you're looking at. You'll see notifications in the app; there are no emails or texts (yet) |
+| **Portfolio** | What you own, your profit, how it would move if the market fell, and where your money is by sector |
+| **Journal** | Write down why you buy or sell; the app saves what its signals said then and shows later how it turned out |
+| **Alerts** | Get a notification when a stock or a market signal crosses a level you pick, for example "NVDA below $180" or "VIX above 30". Spot something on any page? The Alerts button in the top bar opens a side panel that starts from what you're looking at. You'll see notifications in the app, and as desktop pop-ups if you turn them on in Settings |
 | **S&P 500 Scanner** | Rank and filter every member to find new names |
+| **Stock pages** | Everything on one company, with a "Before you buy" checklist, your own lists and notes, SEC filings and insider trades |
 | **Chart Lab** | Candles, moving averages and indicators, with any market signal layered over the price. Intraday charts can include pre-market and after-hours bars |
 
 **Check whether a signal actually works**
@@ -68,10 +74,11 @@ This is my favourite part. It's easy to believe a signal works because it sounds
 |---|---|
 | **Signal Study** | What did the market do after a signal fired, compared with any ordinary day? |
 | **Backtests** | How would a strategy have done against just buying and holding? Build your own rules from any signal |
+| **Timeline** | Pick any past day and see what this dashboard would have said then, using only data published by then, and what the market did next |
 
 **And when you want to know more**
 
-The **Metric Guide** explains every number in one searchable place, and **Data Sources** shows how fresh each source is.
+The **Metric Guide** explains every number in one searchable place, **Data Sources** shows how fresh each source is, and **Settings** has notifications and a one-file backup of everything you set up yourself.
 
 ## Where the data comes from
 
@@ -79,7 +86,7 @@ No sign-ups, just free public sources:
 
 | Source | Used for | Delay |
 |---|---|---|
-| Yahoo Finance (`yfinance`) | Prices (pre-market and after hours too), indices, futures, company data | About 15 minutes for US stocks |
+| Yahoo Finance (`yfinance`) | Prices (pre-market and after hours too), indices, futures, company data, earnings calendar, SEC filings and insider trades | About 15 minutes for US stocks |
 | Cboe | Option chains with greeks, daily put/call ratios | About 15 minutes; ratios end of day |
 | SqueezeMetrics | Dark pool index (DIX) and market GEX history | Next morning |
 | FRED, US Treasury | Rates, credit, liquidity, economy | Daily to monthly |
@@ -91,7 +98,7 @@ No sign-ups, just free public sources:
 
 So this is for planning your trades, not for timing them to the second. These sources are free and come with no guarantee, so one can change or go down at any time. When that happens, its panels keep the last good data, the Data Sources page tells you why, and everything else carries on. AAII's site, for example, sometimes answers with a bot check, and those panels then stay empty until it lets a download through.
 
-Your data sits in `data/market.db` (about 100 MB). You can safely delete it and it will rebuild itself. You'd only lose your watchlist and the history free sources don't offer, such as daily gamma readings.
+Your data sits in `data/market.db` (about 100 MB). You can safely delete it and the market data will rebuild itself, but you'd lose what you set up yourself (watchlist, lists, notes, alerts, positions, journal) and the history free sources don't offer, such as daily gamma readings. Download a backup in Settings first.
 
 ## Please don't trust it blindly
 

@@ -21,7 +21,7 @@ import pandas as pd
 
 from src.analytics import options as option_analytics
 from src.analytics.breadth import refresh_breadth_tables
-from src.data import cboe, fundamentals, macro_sources, prediction_markets
+from src.data import calendars, cboe, fundamentals, macro_sources, prediction_markets
 from src.data.catalog import BREADTH_HISTORY_START, CORE_HISTORY_START, CORE_SYMBOLS, OPTION_CORE
 from src.data.market_calendar import is_market_open, last_completed_session, now_et
 from src.data.market_data import refresh_prices
@@ -81,8 +81,8 @@ def _refresh_breadth(store: Store) -> str:
 
 
 def _refresh_watchlist(store: Store) -> str:
-    watched = store.watchlist()
-    # Stocks with alerts are kept fresh too, even if they aren't on the watchlist.
+    # Your positions and stocks with alerts are kept fresh too, even if they aren't on the watchlist.
+    watched = list(dict.fromkeys([*store.watchlist(), *store.position_symbols()]))
     symbols = list(dict.fromkeys([*watched, *store.alert_symbols()]))
     if not symbols:
         return "Watchlist is empty"
@@ -90,6 +90,15 @@ def _refresh_watchlist(store: Store) -> str:
     for symbol in watched:
         fundamentals.get_fundamentals(store, symbol)
     return f"{result['updated']} of {len(symbols)} symbols"
+
+
+def _refresh_prediction(store: Store) -> str:
+    from src.analytics.events import log_expectations
+
+    outcome = prediction_markets.refresh_prediction_markets(store)
+    # Remember each number's last expectation before release, for the calendar's surprises.
+    log_expectations(store, store.kv_get("pm:board") or {})
+    return outcome
 
 
 def _refresh_options(store: Store) -> str:
@@ -178,8 +187,10 @@ SOURCES: list[Source] = [
     Source("events", "Fed and economic release calendar", "Federal Reserve, FRED", "Checked daily",
            "Overview catalysts", macro_sources.refresh_events, 24 * HOUR, 24 * HOUR, refresh_all_gap=1 * HOUR),
     Source("prediction", "Fed, recession, inflation and earnings odds", "Kalshi, Polymarket", "Live market prices, checked every hour",
-           "Macro & Credit, Overview catalysts, stock pages", prediction_markets.refresh_prediction_markets, 1 * HOUR, 3 * HOUR,
+           "Prediction Markets, Economic Calendar, Overview catalysts, stock pages", _refresh_prediction, 1 * HOUR, 3 * HOUR,
            refresh_all_gap=15 * MINUTE),
+    Source("earnings_calendar", "Company earnings calendar", "Yahoo Finance", "Checked twice a day",
+           "Earnings Season, morning brief", calendars.refresh_earnings_calendar, 12 * HOUR, 12 * HOUR, refresh_all_gap=1 * HOUR),
 ]
 SOURCE_BY_ID = {source.id: source for source in SOURCES}
 

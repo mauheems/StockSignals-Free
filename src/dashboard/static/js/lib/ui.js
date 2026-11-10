@@ -137,8 +137,15 @@ export function signalTile(row, { label, metric, fmtCode, spark = true, deltaFmt
     fmtCode: code,
     delta: text ? deltaSpan(text, change, row.higher_is) : null,
     spark: spark ? row.spark : null,
-    foot: [row.score !== null && row.score !== undefined ? scoreBadge(row.score, row.pillar === "crowd") : h("span", {}), h("span", {}, fmtDate(row.date))],
+    foot: [row.score !== null && row.score !== undefined ? scoreBadge(row.score, row.pillar === "crowd") : h("span", {}), dateMark(row)],
   });
+}
+
+/** The date of a reading, marked when the source has stopped delivering new ones. */
+export function dateMark(row) {
+  if (!row?.date) return h("span", {}, MISSING);
+  if (!row.stale) return h("span", { title: `Latest reading: ${row.date}` }, fmtDate(row.date));
+  return h("span", { class: "stale-mark", title: `No new reading for ${row.age} trading sessions, longer than usual. Check Data Sources.` }, `${fmtDate(row.date)} · stale`);
 }
 
 export function heatColor(value, maxAbs) {

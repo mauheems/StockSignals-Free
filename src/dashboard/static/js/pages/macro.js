@@ -1,39 +1,8 @@
 // The backdrop: interest rates, credit stress, liquidity, growth and inflation.
 import { api, query } from "../lib/api.js";
 import { categoryLines, chartCard, lineChart } from "../lib/charts.js";
-import { fmt, fmtDate, h, prefs, replace } from "../lib/dom.js";
-import { info } from "../lib/guide.js";
-import { emptyBox, field, filters, pageHead, segmented, signalTile, tile } from "../lib/ui.js";
-
-const tradedText = (volume) => `${fmt(volume, "usdcompact")} traded`;
-
-/** Odds for each outcome of the next Fed meeting, as a small bar list. */
-function fedCard(fed) {
-  if (!fed) return h("section", { class: "card" }, h("h3", { class: "card-title" }, "Next Fed meeting", info("fed_odds")), emptyBox("Fed odds appear once Kalshi has been read."));
-  return h("section", { class: "card" },
-    h("div", { class: "card-head" },
-      h("h3", { class: "card-title" }, `Next Fed meeting, ${fmtDate(fed.date, true)}`, info("fed_odds")),
-      h("a", { class: "sub-text", href: fed.url, target: "_blank", rel: "noopener noreferrer" }, `${fed.source} ↗`)),
-    h("div", { class: "odds-list" }, fed.outcomes.map((item) => h("div", { class: `odds-row ${item.label === fed.likely ? "is-likely" : ""}` },
-      h("span", { class: "odds-label" }, item.label),
-      h("div", { class: "odds-track", role: "meter", "aria-valuenow": Math.round(item.prob * 100), "aria-valuemin": 0, "aria-valuemax": 100, "aria-label": item.label },
-        h("div", { class: "odds-fill", style: { width: `${Math.max(0.5, item.prob * 100)}%` } })),
-      h("span", { class: "odds-value" }, `${Math.round(item.prob * 100)}%`)))),
-    h("p", { class: "sub-text", style: { marginTop: "6px" } }, `${tradedText(fed.volume)} on this meeting. Odds are scaled to add up to 100%.`));
-}
-
-function expectationTile(reading, metric, label) {
-  if (!reading) return tile({ label, metric, valueText: "–", foot: h("span", {}, "No market right now") });
-  const range = reading.low !== null && reading.high !== null ? `likely ${fmt(reading.low, reading.fmt)} to ${fmt(reading.high, reading.fmt)}` : null;
-  return tile({
-    label: `${label}${reading.period ? `, ${reading.period}` : ""}`,
-    metric,
-    value: reading.median,
-    fmtCode: reading.fmt,
-    delta: range ? h("span", { class: "sub-text" }, range) : null,
-    foot: h("span", {}, `Out ${fmtDate(reading.release)} · ${tradedText(reading.volume)}`),
-  });
-}
+import { h, prefs, replace } from "../lib/dom.js";
+import { field, filters, pageHead, segmented, signalTile } from "../lib/ui.js";
 
 const RANGES = [
   { value: "1y", label: "1Y" }, { value: "2y", label: "2Y" }, { value: "5y", label: "5Y" },
@@ -47,7 +16,6 @@ export default {
     const ratesBox = h("div", { class: "grid cols-4" });
     const creditBox = h("div", { class: "grid cols-4" });
     const economyBox = h("div", { class: "grid cols-5" });
-    const predictionBox = h("div", { class: "split-1-2" });
     const cards = {
       curve: chartCard({ title: "Treasury yield curve", metric: "yield_curve", subtitle: "Yields by maturity", height: 250 }),
       yields: chartCard({ title: "Key interest rates", metric: "dgs10", subtitle: "10-year, 2-year and the Fed's policy rate", height: 250 }),
@@ -61,36 +29,11 @@ export default {
       copperGold: chartCard({ title: "Copper / gold", metric: "copper_gold", subtitle: "Growth vs fear, with its 50-day average (x1,000)", height: 220 }),
       inflation: chartCard({ title: "Inflation", metric: "cpi_yoy", subtitle: "Percent change over 12 months", height: 220 }),
       claims: chartCard({ title: "Initial jobless claims", metric: "claims", subtitle: "Weekly", height: 220 }),
-      odds: chartCard({ title: "Fed and recession odds over the past year", metric: "prediction_markets", subtitle: "Kalshi, in percent. Fed odds follow whichever meeting is next", height: 200 }),
       labour: chartCard({ title: "Unemployment and Sahm rule", metric: "sahm", subtitle: "A Sahm reading of 0.5 has marked early recessions", height: 220 }),
     };
 
     const draw = (data) => {
       const rows = data.rows;
-      const prediction = data.prediction;
-      const board = prediction.board || {};
-      const recession = board.recession_next;
-      replace(predictionBox,
-        fedCard(board.fed),
-        h("div", { class: "stack" },
-          h("div", { class: "grid cols-4" },
-            signalTile(prediction.rows.pm_recession, { label: recession ? `Recession odds, ${recession.year}` : "Recession odds, next year", metric: "pm_recession" }),
-            expectationTile(board.cpi, "pm_cpi", "Expected CPI inflation"),
-            expectationTile(board.unemployment, "pm_unemployment", "Expected unemployment"),
-            expectationTile(board.payrolls, "pm_payrolls", "Expected payrolls")),
-          cards.odds.el));
-      cards.odds.render(lineChart({
-        dates: prediction.history.dates,
-        series: [
-          { name: "Fed hike odds", short: "Hike", values: prediction.history.series.hike, slot: 0 },
-          { name: "Fed cut odds", short: "Cut", values: prediction.history.series.cut, slot: 1 },
-          { name: "Recession odds", short: "Recession", values: prediction.history.series.recession, slot: 2 },
-        ],
-        yFmt: "pct0",
-        min: 0,
-        max: 100,
-        emptyText: "Odds history builds up as the app reads the markets.",
-      }));
       replace(ratesBox,
         signalTile(rows.dgs10), signalTile(rows.dgs2), signalTile(rows.t10y2y), signalTile(rows.t10y3m),
         signalTile(rows.fed_funds), signalTile(rows.real10y), signalTile(rows.breakeven10y), signalTile(rows.dxy));
@@ -159,8 +102,8 @@ export default {
         yFmt,
       });
       cards.hyg.render(withAverage(charts.hyg_ief, "HYG / IEF", "num3"));
-      cards.nfci.render(lineChart({ dates: charts.nfci.dates, series: [{ name: "NFCI", values: charts.nfci.values }], yFmt: "num2", thresholds: [{ y: 0, label: "Average" }] }));
-      cards.liquidity.render(lineChart({ dates: charts.liquidity.dates, series: [{ name: "Net liquidity", values: charts.liquidity.values, area: true }], yFmt: "usdtn" }));
+      cards.nfci.render(lineChart({ dates: charts.nfci.dates, series: [{ name: "NFCI", values: charts.nfci.values }], yFmt: "num2", thresholds: [{ y: 0, label: "Average" }], cadence: "weekly" }));
+      cards.liquidity.render(lineChart({ dates: charts.liquidity.dates, series: [{ name: "Net liquidity", values: charts.liquidity.values, area: true }], yFmt: "usdtn", cadence: "weekly" }));
       cards.dxy.render(withAverage(charts.dxy, "Dollar index", "num1"));
       cards.copperGold.render(withAverage(charts.copper_gold, "Copper / gold", "num2"));
       cards.inflation.render(lineChart({
@@ -172,8 +115,9 @@ export default {
         ],
         yFmt: "pct1",
         thresholds: [{ y: 2, label: "Fed goal" }],
+        cadence: "monthly",
       }));
-      cards.claims.render(lineChart({ dates: charts.claims.dates, series: [{ name: "Initial claims", values: charts.claims.values }], yFmt: "num0" }));
+      cards.claims.render(lineChart({ dates: charts.claims.dates, series: [{ name: "Initial claims", values: charts.claims.values }], yFmt: "num0", cadence: "weekly" }));
       cards.labour.render(lineChart({
         dates: charts.unemployment.dates,
         series: [
@@ -182,6 +126,7 @@ export default {
         ],
         yFmt: "num1",
         thresholds: [{ y: 0.5, label: "Sahm trigger" }],
+        cadence: "monthly",
       }));
     };
 
@@ -197,10 +142,10 @@ export default {
         prefs.set("macro.range", value);
         load().catch((error) => console.warn(error));
       }, "Chart period"))),
-      h("div", { class: "section-title", style: { marginTop: 0 } }, "What prediction markets expect", info("prediction_markets"),
-        h("span", { class: "section-sub" }, "Odds from people betting real money on what comes next")),
-      predictionBox,
-      h("div", { class: "section-title" }, "Rates and the dollar"),
+      h("p", { class: "sub-text", style: { margin: "-4px 0 10px" } },
+        "What traders bet on the next Fed decision, a recession and the next inflation report is on ",
+        h("a", { href: "#/prediction" }, "Prediction Markets"), "."),
+      h("div", { class: "section-title", style: { marginTop: 0 } }, "Rates and the dollar"),
       ratesBox,
       h("div", { class: "grid grid-2 mt" }, cards.curve.el, cards.yields.el),
       h("div", { class: "grid grid-3 mt" }, cards.spreads.el, cards.realBreak.el, cards.dxy.el),

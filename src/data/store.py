@@ -87,6 +87,43 @@ CREATE TABLE IF NOT EXISTS alert_events (
     read INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    shares REAL NOT NULL,
+    cost REAL NOT NULL,
+    opened TEXT,
+    stop REAL,
+    target REAL,
+    note TEXT,
+    position REAL,
+    created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS journal (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    action TEXT NOT NULL,
+    shares REAL,
+    price REAL,
+    reason TEXT,
+    snapshot TEXT,
+    created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS symbol_tags (
+    symbol TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    PRIMARY KEY (symbol, tag)
+);
+
+CREATE TABLE IF NOT EXISTS notes (
+    symbol TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS source_status (
     source TEXT PRIMARY KEY,
     last_attempt REAL,
@@ -510,6 +547,131 @@ class Store:
     def alert_events_clear(self) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM alert_events")
+
+    # ---------------------------------------------------------------- positions
+    _POSITION_COLUMNS = ["id", "symbol", "shares", "cost", "opened", "stop", "target", "note", "created_at"]
+
+    def positions(self) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(f"SELECT {', '.join(self._POSITION_COLUMNS)} FROM positions ORDER BY position IS NULL, position, id").fetchall()
+        return [dict(zip(self._POSITION_COLUMNS, row)) for row in rows]
+
+    def position(self, position_id: int) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(f"SELECT {', '.join(self._POSITION_COLUMNS)} FROM positions WHERE id = ?", (position_id,)).fetchone()
+        return dict(zip(self._POSITION_COLUMNS, row)) if row else None
+
+    def position_add(self, symbol: str, shares: float, cost: float, opened: str | None = None, stop: float | None = None,
+                     target: float | None = None, note: str | None = None) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "INSERT INTO positions (symbol, shares, cost, opened, stop, target, note, position, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM positions), ?)",
+                (symbol, shares, cost, opened, stop, target, note, time.time()),
+            )
+            return int(cursor.lastrowid)
+
+    def position_update(self, position_id: int, **fields) -> bool:
+        allowed = {key: value for key, value in fields.items() if key in ("shares", "cost", "opened", "stop", "target", "note")}
+        if not allowed:
+            return self.position(position_id) is not None
+        assignments = ", ".join(f"{key} = ?" for key in allowed)
+        with self.connect() as conn:
+            cursor = conn.execute(f"UPDATE positions SET {assignments} WHERE id = ?", (*allowed.values(), position_id))
+            return cursor.rowcount > 0
+
+    def position_delete(self, position_id: int) -> bool:
+        with self.connect() as conn:
+            return conn.execute("DELETE FROM positions WHERE id = ?", (position_id,)).rowcount > 0
+
+    def positions_reorder(self, ids: Iterable[int]) -> list[int]:
+        current = [row["id"] for row in self.positions()]
+        wanted = [item for item in dict.fromkeys(ids) if item in current]
+        order = wanted + [item for item in current if item not in wanted]
+        with self.connect() as conn:
+            conn.executemany("UPDATE positions SET position = ? WHERE id = ?", [(index + 1, item) for index, item in enumerate(order)])
+        return order
+
+    def position_symbols(self) -> list[str]:
+        return list(dict.fromkeys(row["symbol"] for row in self.positions()))
+
+    # ------------------------------------------------------------------ journal
+    _JOURNAL_COLUMNS = ["id", "date", "symbol", "action", "shares", "price", "reason", "snapshot", "created_at"]
+
+    def _journal_row(self, row) -> dict:
+        entry = dict(zip(self._JOURNAL_COLUMNS, row))
+        entry["snapshot"] = json.loads(entry["snapshot"]) if entry["snapshot"] else None
+        return entry
+
+    def journal(self) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(f"SELECT {', '.join(self._JOURNAL_COLUMNS)} FROM journal ORDER BY date DESC, id DESC").fetchall()
+        return [self._journal_row(row) for row in rows]
+
+    def journal_entry(self, entry_id: int) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(f"SELECT {', '.join(self._JOURNAL_COLUMNS)} FROM journal WHERE id = ?", (entry_id,)).fetchone()
+        return self._journal_row(row) if row else None
+
+    def journal_add(self, date: str, symbol: str, action: str, shares: float | None, price: float | None,
+                    reason: str, snapshot: dict | None, created_at: float | None = None) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "INSERT INTO journal (date, symbol, action, shares, price, reason, snapshot, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (date, symbol, action, shares, price, reason, json.dumps(snapshot) if snapshot is not None else None, created_at or time.time()),
+            )
+            return int(cursor.lastrowid)
+
+    def journal_update(self, entry_id: int, reason: str) -> bool:
+        with self.connect() as conn:
+            return conn.execute("UPDATE journal SET reason = ? WHERE id = ?", (reason, entry_id)).rowcount > 0
+
+    def journal_delete(self, entry_id: int) -> bool:
+        with self.connect() as conn:
+            return conn.execute("DELETE FROM journal WHERE id = ?", (entry_id,)).rowcount > 0
+
+    # ------------------------------------------------------------- tags & notes
+    def tags_by_symbol(self) -> dict[str, list[str]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT symbol, tag FROM symbol_tags ORDER BY tag").fetchall()
+        result: dict[str, list[str]] = {}
+        for symbol, tag in rows:
+            result.setdefault(symbol, []).append(tag)
+        return result
+
+    def tag_names(self) -> list[str]:
+        with self.connect() as conn:
+            return [row[0] for row in conn.execute("SELECT DISTINCT tag FROM symbol_tags ORDER BY tag COLLATE NOCASE")]
+
+    def tag_add(self, symbol: str, tag: str) -> None:
+        with self.connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO symbol_tags (symbol, tag) VALUES (?, ?)", (symbol, tag))
+
+    def tag_remove(self, symbol: str, tag: str) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM symbol_tags WHERE symbol = ? AND tag = ?", (symbol, tag))
+
+    def note(self, symbol: str) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT text, updated_at FROM notes WHERE symbol = ?", (symbol,)).fetchone()
+        return {"text": row[0], "updated_at": row[1]} if row else None
+
+    def note_set(self, symbol: str, text: str) -> None:
+        """Save a note; an empty note removes it."""
+        with self.connect() as conn:
+            if text.strip():
+                conn.execute(
+                    "INSERT INTO notes (symbol, text, updated_at) VALUES (?, ?, ?) "
+                    "ON CONFLICT(symbol) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at",
+                    (symbol, text, time.time()),
+                )
+            else:
+                conn.execute("DELETE FROM notes WHERE symbol = ?", (symbol,))
+
+    def notes(self) -> dict[str, dict]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT symbol, text, updated_at FROM notes").fetchall()
+        return {row[0]: {"text": row[1], "updated_at": row[2]} for row in rows}
 
     # ------------------------------------------------------------- source status
     def status_attempt(self, source: str) -> None:

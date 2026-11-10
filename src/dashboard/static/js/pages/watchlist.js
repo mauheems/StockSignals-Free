@@ -1,7 +1,8 @@
 // Your own list of stocks with every signal side by side.
 import { api } from "../lib/api.js";
-import { MISSING, daysUntil, fmt, fmtDate, h, replace } from "../lib/dom.js";
-import { dataTable, deltaSpan, emptyBox, errorBox, heatCell, pageHead, sparkline, statusBadge, symbolLink, toast } from "../lib/ui.js";
+import { MISSING, daysUntil, fmt, fmtDate, h, prefs, replace } from "../lib/dom.js";
+import { info } from "../lib/guide.js";
+import { dataTable, deltaSpan, emptyBox, errorBox, heatCell, pageHead, segmented, sparkline, statusBadge, symbolLink, toast } from "../lib/ui.js";
 
 export function chipList(chips) {
   if (!chips?.length) return h("span", { class: "sub-text" }, MISSING);
@@ -51,12 +52,17 @@ export default {
             onclick: () => remove(row.symbol),
           }, "×"),
           symbolLink(row.symbol),
-          h("span", { class: "sub-text" }, (row.name || "").slice(0, 22))),
+          h("span", { class: "sub-text" }, (row.name || "").slice(0, 22)),
+          row.note ? h("span", { class: "note-mark", title: `Your note: ${row.note.slice(0, 200)}`, "aria-label": "Has a note" }, "✎") : null),
       },
       { key: "last", label: "Last", fmt: "num2" },
       { key: "change_pct", label: "Today", metric: "period_returns", render: (row) => heatCell(row.change_pct, 5, "spct2") },
       { key: "trend", label: "Trend", metric: "trend_state", value: (row) => row.trend?.label, render: (row) => (row.trend ? statusBadge(row.trend.tone, row.trend.label) : MISSING) },
       { key: "chips", label: "Flags", left: true, sortable: false, render: (row) => chipList(row.chips) },
+      {
+        key: "tags", label: "Lists", left: true, metric: "notes_tags", value: (row) => (row.tags || []).join(", "),
+        render: (row) => (row.tags?.length ? h("div", { class: "chips", style: { flexWrap: "nowrap" } }, row.tags.map((tag) => h("span", { class: "chip" }, tag))) : h("span", { class: "sub-text" }, MISSING)),
+      },
       { key: "ret_5d", label: "1 week", render: (row) => heatCell(row.ret_5d, 10) },
       { key: "ret_1m", label: "1 month", render: (row) => heatCell(row.ret_1m, 20) },
       { key: "ret_ytd", label: "YTD", render: (row) => heatCell(row.ret_ytd, 50) },
@@ -98,17 +104,41 @@ export default {
     let rows = [];
     let quotes = {};
     let withExtended = false;
+    let tag = prefs.get("watchlist.tag", "all");
+    let builtFor = "";
+    const tagBox = h("div", {});
+
+    const drawTags = () => {
+      const names = [...new Set(rows.flatMap((row) => row.tags || []))].sort((a, b) => a.localeCompare(b));
+      if (tag !== "all" && !names.includes(tag)) tag = "all";
+      replace(tagBox, names.length
+        ? h("div", { class: "filters", style: { marginBottom: "8px" } },
+          h("span", { class: "field-label" }, "Show list", info("notes_tags")),
+          segmented([{ value: "all", label: "All" }, ...names.map((name) => ({ value: name, label: name }))], tag, (value) => {
+            tag = value;
+            prefs.set("watchlist.tag", value);
+            draw();
+          }, "Show list"),
+          tag !== "all" ? h("span", { class: "sub-text" }, "Show All to change the order.") : null)
+        : null);
+    };
 
     const draw = () => {
+      drawTags();
       if (!rows.length) {
         replace(tableBox, emptyBox("Your watchlist is empty. Add a ticker above to start."));
         tableEl = null;
         return;
       }
-      const merged = rows.map((row) => ({ ...row, extended: quotes[row.symbol] || null }));
-      // The column only exists outside regular hours, so the table is rebuilt when it comes or goes.
+      const merged = rows
+        .filter((row) => tag === "all" || (row.tags || []).includes(tag))
+        .map((row) => ({ ...row, extended: quotes[row.symbol] || null }));
+      // The column only exists outside regular hours, so the table is rebuilt when it comes or goes;
+      // a list filter turns dragging off, because the hidden stocks keep their places.
       const hasExtended = merged.some((row) => row.extended);
-      if (hasExtended !== withExtended) tableEl = null;
+      const build = `${hasExtended}|${tag === "all"}`;
+      if (build !== builtFor) tableEl = null;
+      builtFor = build;
       withExtended = hasExtended;
       if (tableEl) {
         tableEl.update(merged);
@@ -121,7 +151,7 @@ export default {
           onRow: (row) => { location.hash = `#/stock/${encodeURIComponent(row.symbol)}`; },
           rowKey: (row) => row.symbol,
           itemName: "stock",
-          reorder: saveOrder,
+          reorder: tag === "all" ? saveOrder : null,
         });
         replace(tableBox, tableEl);
       }
@@ -185,6 +215,7 @@ export default {
     replace(root,
       pageHead("Watchlist", "Your stocks with trend, momentum, options and short interest side by side. Select a row for the full picture, or find names in the S&P 500 Scanner."),
       form,
+      tagBox,
       tableBox,
       h("p", { class: "table-note" }, "These stocks also appear on the Rotation page (choose the Watchlist universe) and in Next catalysts on the Overview."));
 

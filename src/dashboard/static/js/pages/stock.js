@@ -2,9 +2,140 @@
 import { openAlertDrawer } from "../lib/alert-drawer.js";
 import { api } from "../lib/api.js";
 import { chartCard, lineChart } from "../lib/charts.js";
-import { MISSING, compact, daysUntil, fmt, fmtDate, h, replace } from "../lib/dom.js";
+import { MISSING, compact, daysUntil, debounce, fmt, fmtDate, h, replace } from "../lib/dom.js";
 import { info } from "../lib/guide.js";
 import { dataTable, deltaSpan, emptyBox, heatCell, kvRow, pageHead, statusBadge, toast } from "../lib/ui.js";
+
+const CHECK_ICONS = { good: "▲", warn: "◆", bad: "▼", info: "●" };
+const CHECK_WORDS = { good: "In favour", warn: "Watch out", bad: "Against", info: "To know" };
+
+/** "Before you buy": the stock's situation in a few plain checks. */
+function checklistCard(checks, summary) {
+  if (!checks?.length) return null;
+  return h("section", { class: "card", id: "checklist" },
+    h("div", { class: "card-head" },
+      h("h3", { class: "card-title" }, "Before you buy", info("checklist")),
+      h("span", { class: "sub-text" }, `${summary.good} in favour · ${summary.warn} to watch · ${summary.bad} against`)),
+    h("div", { class: "checklist" }, checks.map((check) => h("div", { class: `check check-${check.state}` },
+      h("span", { class: "check-icon", "aria-label": CHECK_WORDS[check.state], title: CHECK_WORDS[check.state] }, CHECK_ICONS[check.state]),
+      h("div", {},
+        h("div", { class: "check-label" }, check.label, info(check.metric)),
+        h("div", { class: "check-text" }, check.text))))),
+    h("p", { class: "sub-text", style: { marginTop: "6px" } }, "Rules of thumb to put the numbers in context, not advice. A red check can be exactly why a trade is interesting, if you know it."));
+}
+
+/** Your own lists and notes for this stock. */
+function notesCard(data) {
+  const tagsBox = h("div", { class: "chips" });
+  const saved = h("span", { class: "sub-text", "aria-live": "polite" });
+  let tags = data.tags || [];
+  const all = data.all_tags || [];
+  const drawTags = () => replace(tagsBox,
+    tags.length ? tags.map((tag) => h("span", { class: "chip" }, tag,
+      h("button", {
+        type: "button",
+        "aria-label": `Remove from ${tag}`,
+        title: `Remove from ${tag}`,
+        onclick: async () => {
+          try {
+            tags = (await api.post("/api/tags/remove", { symbol: data.symbol, tag })).tags;
+            drawTags();
+          } catch (error) {
+            toast(error.message, "error");
+          }
+        },
+      }, "×"))) : h("span", { class: "sub-text" }, "Not in any of your lists yet."));
+  drawTags();
+  const tagInput = h("input", { class: "input", list: "tag-names", placeholder: "List name, e.g. Semis", "aria-label": "Add to a list", id: "tag-input", maxlength: 30, style: { width: "170px" } });
+  const addTag = async (event) => {
+    event.preventDefault();
+    const tag = tagInput.value.trim();
+    if (!tag) {
+      toast("Type a list name, such as Semis or Ideas.");
+      tagInput.focus();
+      return;
+    }
+    try {
+      tags = (await api.post("/api/tags", { symbol: data.symbol, tag })).tags;
+      tagInput.value = "";
+      drawTags();
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  };
+  const note = h("textarea", { class: "input stock-note", id: "stock-note", rows: 3, maxlength: 5000, placeholder: "Your thoughts on this stock: thesis, levels to watch, what would change your mind.", "aria-label": "Your note" }, data.note?.text || "");
+  const store = debounce(async () => {
+    try {
+      await api.post(`/api/notes/${encodeURIComponent(data.symbol)}`, { text: note.value });
+      replace(saved, note.value.trim() ? "Saved" : "Note removed");
+    } catch (error) {
+      replace(saved, error.message);
+    }
+  }, 700);
+  note.addEventListener("input", () => {
+    replace(saved, "Saving…");
+    store();
+  });
+  return h("section", { class: "card" },
+    h("h3", { class: "card-title", style: { marginBottom: "6px" } }, "Your lists and notes", info("notes_tags")),
+    tagsBox,
+    h("form", { class: "filters", style: { margin: "8px 0" }, onsubmit: addTag }, tagInput, h("button", { class: "btn btn-xs", type: "submit" }, "Add to list"),
+      h("datalist", { id: "tag-names" }, all.map((name) => h("option", { value: name })))),
+    note, saved);
+}
+
+/** Your own position in this stock, if you have one. */
+function positionLine(rows) {
+  if (!rows?.length) return null;
+  const shares = rows.reduce((sum, row) => sum + row.shares, 0);
+  const pnl = rows.reduce((sum, row) => sum + (row.pnl || 0), 0);
+  const basis = rows.reduce((sum, row) => sum + row.basis, 0);
+  const pct = basis ? (pnl / basis) * 100 : null;
+  return h("p", { class: "earnings-odds" },
+    h("span", { class: "ext-tag" }, "Your position"),
+    h("span", {}, `${fmt(shares, shares % 1 ? "num2" : "num0")} shares, ${pnl >= 0 ? "up" : "down"} $${fmt(Math.abs(pnl), "num0")}`),
+    deltaSpan(fmt(Math.abs(pct ?? 0), "pct1"), pct, "good"),
+    h("a", { href: "#/portfolio" }, "Portfolio"));
+}
+
+const KIND_WORDS = { buy: "Bought", sell: "Sold", award: "Award", gift: "Gift", "option exercise": "Option exercise", other: "Other" };
+
+/** SEC filings and insider trades, loaded on demand. */
+function filingsSection(result) {
+  if (!result) return h("section", { class: "card" }, h("h3", { class: "card-title" }, "Filings and insider trades", info("filings")), emptyBox("Loading filings…"));
+  const summary = result.summary;
+  const tradeRows = result.trades.filter((trade) => trade.kind === "buy" || trade.kind === "sell").slice(0, 12);
+  const summaryText = summary.buys || summary.sells
+    ? `Last 6 months: ${summary.buys} open-market buy${summary.buys === 1 ? "" : "s"} ($${compact(summary.bought_value)}) and ${summary.sells} sale${summary.sells === 1 ? "" : "s"} ($${compact(summary.sold_value)}) by insiders.`
+    : "No open-market insider buys or sales in the last 6 months.";
+  return h("div", { class: "grid grid-2", style: { alignItems: "start" } },
+    h("section", { class: "card" },
+      h("h3", { class: "card-title", style: { marginBottom: "4px" } }, "Insider trades", info("insider_trades")),
+      h("p", { class: "card-sub" }, summaryText),
+      dataTable({
+        id: "insider-trades",
+        columns: [
+          { key: "date", label: "Date", left: true, render: (row) => fmtDate(row.date, true), value: (row) => row.date },
+          { key: "insider", label: "Insider", left: true, render: (row) => h("span", {}, row.insider, h("span", { class: "sub-text" }, row.position ? ` · ${row.position}` : "")) },
+          { key: "kind", label: "Trade", left: true, render: (row) => statusBadge(row.kind === "buy" ? "good" : "critical", KIND_WORDS[row.kind]) },
+          { key: "shares", label: "Shares", render: (row) => compact(row.shares) },
+          { key: "value", label: "Value", render: (row) => (row.value ? `$${compact(row.value)}` : MISSING) },
+        ],
+        rows: tradeRows,
+        rowKey: (row) => `${row.date}-${row.insider}-${row.shares}`,
+        empty: "No open-market insider buys or sales listed.",
+      })),
+    h("section", { class: "card" },
+      h("h3", { class: "card-title", style: { marginBottom: "4px" } }, "SEC filings", info("filings")),
+      h("p", { class: "card-sub" }, "Newest first. Important events (8-K), quarterly and annual reports are marked."),
+      h("div", { class: "feed" }, result.filings.slice(0, 15).map((filing) => h("div", { class: "feed-row", style: { gridTemplateColumns: "84px minmax(0, 1fr)" } },
+        h("span", { class: "feed-date" }, fmtDate(filing.date, true)),
+        h("span", { class: "feed-text" },
+          h("strong", { style: { fontWeight: filing.notable ? 650 : 450 } }, filing.form), filing.kind ? h("span", { class: "sub-text" }, filing.kind) : null,
+          h("span", {}, filing.title),
+          filing.url ? h("a", { href: filing.url, target: "_blank", rel: "noopener noreferrer", class: "sub-text" }, "Read ↗") : null))),
+        result.filings.length ? null : emptyBox("No filings listed for this symbol."))));
+}
 
 const pct = (value, code = "pct1") => (value === null || value === undefined ? MISSING : fmt(value * 100, code));
 
@@ -219,6 +350,7 @@ export default {
     const optionsBox = h("div", {}, optionsSection(null, s));
     const fundamentalBox = h("div", { class: "grid grid-3" }, h("section", { class: "card" }, emptyBox("Loading company data…")));
     const earningsBox = h("div", {});
+    const filingsBox = h("div", {}, filingsSection(null));
     const extendedBox = h("span", { class: "ext-line" });
     const loadExtended = async () => {
       try {
@@ -248,15 +380,20 @@ export default {
           watchButton,
           h("a", { class: "btn", href: `#/chart/${encodeURIComponent(data.symbol)}` }, "Open in Chart Lab"),
           h("button", { class: "btn", type: "button", id: "stock-add-alert", onclick: () => openAlertDrawer(alertContext()) }, "Add alert"),
+          h("a", { class: "btn", href: `#/journal/new/${encodeURIComponent(data.symbol)}` }, "Log a trade"),
           h("a", { class: "btn", href: `#/backtest/${encodeURIComponent(data.symbol)}` }, "Backtest this"))),
       data.chips.length ? chipsBox : null,
       earningsOddsLine(data.earnings_odds, data.symbol),
+      positionLine(data.positions),
       periodCells(s),
+      h("div", { class: "split-2-1", style: { alignItems: "start", marginBottom: "10px" } }, checklistCard(data.checklist, data.checklist_summary) || h("div", {}), notesCard(data)),
       h("div", { class: "split-2-1" }, priceChart.el, trendSection(s)),
       h("div", { class: "grid grid-3 mt" }, technicalSections(s)),
       h("div", { class: "mt" }, optionsBox),
       h("div", { class: "mt" }, fundamentalBox),
-      h("div", { class: "mt" }, earningsBox));
+      h("div", { class: "mt" }, earningsBox),
+      h("div", { class: "section-title" }, "Filings and insider trades"),
+      filingsBox);
 
     loadExtended();
     const chartData = await api.get(`/api/chart/${encodeURIComponent(data.symbol)}?interval=1d&range=1y`);
@@ -281,6 +418,9 @@ export default {
         replace(earningsBox, earningsTable(result.earnings_history));
       })
       .catch((error) => { if (active) replace(fundamentalBox, h("section", { class: "card" }, emptyBox(error.message))); });
+    api.get(`/api/stock/${encodeURIComponent(data.symbol)}/filings`)
+      .then((result) => { if (active) replace(filingsBox, filingsSection(result)); })
+      .catch((error) => { if (active) replace(filingsBox, h("section", { class: "card" }, emptyBox(error.message))); });
 
     const extendedTimer = setInterval(loadExtended, 3 * 60 * 1000);
     return {

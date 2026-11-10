@@ -109,6 +109,7 @@ export default {
           { name: "Bearish", values: charts.aaii.series.bear, slot: 7 },
         ],
         yFmt: "pct0",
+        cadence: "weekly",
       }));
       cards.cot.render(lineChart({
         dates: charts.cot.dates,
@@ -117,6 +118,7 @@ export default {
           { name: "Leveraged funds", short: "Lev. funds", values: charts.cot.series.leveraged_funds, slot: 1 },
         ],
         yFmt: "compact",
+        cadence: "weekly",
       }));
     };
 

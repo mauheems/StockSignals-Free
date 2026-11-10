@@ -362,11 +362,11 @@ SIGNALS: list[Signal] = [
     Signal("aaii_bull", "AAII bullish share", "Sentiment", "pct1", _stored("aaii:bull"), ffill=10, page="flows"),
     Signal("aaii_bear", "AAII bearish share", "Sentiment", "pct1", _stored("aaii:bear"), ffill=10, page="flows"),
     # Prediction markets (Kalshi): probabilities in percent, or the market's middle estimate.
-    Signal("pm_fed_hike", "Fed hike odds, next meeting", "Prediction markets", "pct0", _stored("pm:fed_hike"), higher_is="bad", page="macro"),
-    Signal("pm_fed_cut", "Fed cut odds, next meeting", "Prediction markets", "pct0", _stored("pm:fed_cut"), page="macro"),
-    Signal("pm_recession", "Recession odds, next year", "Prediction markets", "pct0", _stored("pm:recession"), higher_is="bad", page="macro"),
-    Signal("pm_cpi", "Expected CPI inflation, next report", "Prediction markets", "pct1", _stored("pm:cpi"), higher_is="bad", page="macro", ffill=10),
-    Signal("pm_unemployment", "Expected unemployment rate, next report", "Prediction markets", "pct1", _stored("pm:unemployment"), higher_is="bad", page="macro", ffill=10),
+    Signal("pm_fed_hike", "Fed hike odds, next meeting", "Prediction markets", "pct0", _stored("pm:fed_hike"), higher_is="bad", page="prediction"),
+    Signal("pm_fed_cut", "Fed cut odds, next meeting", "Prediction markets", "pct0", _stored("pm:fed_cut"), page="prediction"),
+    Signal("pm_recession", "Recession odds, next year", "Prediction markets", "pct0", _stored("pm:recession"), higher_is="bad", page="prediction"),
+    Signal("pm_cpi", "Expected CPI inflation, next report", "Prediction markets", "pct1", _stored("pm:cpi"), higher_is="bad", page="prediction", ffill=10),
+    Signal("pm_unemployment", "Expected unemployment rate, next report", "Prediction markets", "pct1", _stored("pm:unemployment"), higher_is="bad", page="prediction", ffill=10),
     Signal("cot_am_net", "Asset managers' S&P futures net position", "Sentiment", "num0", _stored("cot:es:asset_mgr"), lag=3, ffill=10, page="flows", positive_only=False),
     Signal("cot_lev_net", "Leveraged funds' S&P futures net position", "Sentiment", "num0", _stored("cot:es:lev_funds"), lag=3, ffill=10, page="flows", positive_only=False),
 
@@ -524,10 +524,15 @@ def signal_row(ctx: Ctx, signal_id: str, spark_points: int = 60) -> dict | None:
     earlier = values[values.index <= latest_date - pd.Timedelta(days=7)]
     previous = earlier.iloc[-1] if not earlier.empty else None
     window = values[values.index >= latest_date - pd.Timedelta(days=365)]
+    # Trading sessions since the latest reading, against how long a reading normally stays current.
+    calendar = ctx.calendar()
+    age = int((calendar > latest_date).sum()) if len(calendar) else 0
     return {
         "id": signal_id,
         "label": definition.label,
         "group": definition.group,
+        "age": age,
+        "stale": age > definition.ffill + definition.lag,
         "pillar": definition.pillar,
         "fmt": definition.fmt,
         "value": float(values.iloc[-1]),

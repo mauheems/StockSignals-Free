@@ -1,6 +1,7 @@
 """The API and shared catalogues, run offline against a small generated database."""
 
 import datetime as dt
+import json
 import re
 from pathlib import Path
 
@@ -71,6 +72,16 @@ def store(tmp_path_factory, monkeypatch_module):
     monkeypatch_module.setattr(fundamentals, "fetch_fundamentals", lambda symbol: {"symbol": symbol, "info": {}, "next_earnings": None, "earnings_history": [], "insiders": None, "analysts": None})
     monkeypatch_module.setattr("src.data.market_data.yahoo_download", lambda *args, **kwargs: {})
     monkeypatch_module.setattr(macro_sources, "FINRA_CACHE_DIR", Path("/nonexistent-finra-cache"))
+    from src.data import filings
+
+    monkeypatch_module.setattr(filings, "fetch_filings", lambda symbol: {
+        "symbol": symbol,
+        "filings": [{"date": "2026-08-26", "form": "8-K", "kind": "Important event", "title": "Results", "url": "https://finance.yahoo.com/x", "notable": True}],
+        "trades": [
+            {"date": "2099-01-02", "insider": "A Person", "position": "Director", "kind": "sell", "text": "Sale", "shares": 1000.0, "value": 200000.0, "price": 200.0},
+            {"date": "2099-01-03", "insider": "B Person", "position": "CEO", "kind": "buy", "text": "Purchase", "shares": 500.0, "value": 90000.0, "price": 180.0},
+        ],
+    })
     return db
 
 
@@ -145,6 +156,8 @@ def test_market_scoring_rules_are_described():
     "/api/rotation?universe=watchlist", "/api/volatility", "/api/flows", "/api/macro", "/api/watchlist", "/api/scanner",
     "/api/stock/NVDA", "/api/chart/NVDA", "/api/chart/NVDA?interval=1wk&range=5y", "/api/options/underlyings",
     "/api/signals/aligned?symbol=SPY&ids=vix,pct_above_50,px:QQQ",
+    "/api/brief", "/api/portfolio", "/api/journal", "/api/earnings", "/api/calendar", "/api/timeline",
+    "/api/timeline?date=2025-06-02", "/api/stock/NVDA/filings", "/api/backup", "/api/settings/storage", "/api/prediction",
 ])
 def test_pages_answer_with_valid_json(client, path):
     response = client.get(path)
@@ -847,6 +860,249 @@ def test_catalysts_show_what_the_markets_expect(store):
         store.kv_delete("pm:board")
 
 
-def test_macro_page_carries_prediction_markets(client):
-    body = client.get("/api/macro").json()
-    assert set(body["prediction"]) == {"board", "rows", "history"}
+def test_prediction_markets_page(client, store):
+    store.kv_set("pm:earnings", {"NVDA": {"symbol": "NVDA", "question": "Will Nvidia (NVDA) beat quarterly earnings?", "prob": 0.9,
+                                          "volume": 900.0, "date": "2099-11-17", "consensus_eps": 2.53, "url": "https://polymarket.com/event/x"}})
+    try:
+        body = client.get("/api/prediction").json()
+        assert [item["key"] for item in body["indicators"]] == ["cpi_mom", "core_cpi_mom", "cpi", "unemployment", "payrolls", "gdp"]
+        assert body["earnings"][0]["name"] == "Nvidia" and body["earnings"][0]["in_watchlist"] is True
+        assert "prediction" not in client.get("/api/macro").json()
+    finally:
+        store.kv_delete("pm:earnings")
+
+
+def test_ladders_with_unquoted_gaps_are_left_out():
+    from src.data import prediction_markets as pm
+
+    now = _et("2026-11-09 08:00")
+    close = "2027-04-28T18:00:00Z"
+    quotes = [(3.75, 0.95, 0.97), (4.0, 0.78, 0.94), (4.25, 0.72, 0.85), (4.5, 0.05, 0.85), (5.5, 0.0, 0.01)]
+    markets = [_kalshi(f"KXFED-27APR-T{k}", "KXFED-27APR", close, b, a, floor_strike=k) for k, b, a in quotes]
+    # 4.0 and 4.5 have no usable quote, and the odds fall from 78% to 0.5% across them.
+    assert pm.ladder(markets, now, discrete=True) is None
+
+
+def test_stepped_numbers_get_odds_per_step():
+    from src.data import prediction_markets as pm
+
+    now = _et("2026-11-09 08:00")
+    close = "2026-11-10T13:29:00Z"
+    above = [(0.0, 0.995), (0.1, 0.965), (0.2, 0.545), (0.3, 0.09), (0.4, 0.015)]
+    markets = [_kalshi(f"KXCPI-26OCT-T{k}", "KXCPI-26OCT", close, p - 0.005, p + 0.005, floor_strike=k,
+                       title="Will CPI rise more than 0.2% in October 2026?") for k, p in above]
+    reading = pm.ladder(markets, now, discrete=True)
+    by_value = {round(row["value"], 1): row["prob"] for row in reading["buckets"]}
+    assert by_value[0.3] == pytest.approx(0.455, abs=0.01)
+    assert by_value[0.2] == pytest.approx(0.42, abs=0.01)
+    assert reading["median"] == pytest.approx(0.3)  # 0.0 to 0.2 add up to only 45.5%
+    assert reading["period"] == "October 2026"
+    assert sum(row["prob"] for row in reading["buckets"]) == pytest.approx(1.0)
+
+
+
+# --------------------------------------------------------------- positions and journal
+def test_positions_are_valued_and_summed(client, store):
+    added = client.post("/api/positions", json={"symbol": "msft", "shares": 10, "cost": 50, "stop": 40}).json()
+    try:
+        assert added["symbol"] == "MSFT"
+        body = client.get("/api/portfolio").json()
+        row = next(row for row in body["rows"] if row["id"] == added["id"])
+        last = float(store.get_prices("MSFT")["Close"].iloc[-1])
+        assert row["value"] == pytest.approx(10 * last)
+        assert row["pnl_pct"] == pytest.approx((last / 50 - 1) * 100)
+        assert row["stop_distance"] == pytest.approx((40 / last - 1) * 100)
+        assert body["totals"]["count"] == 1 and body["sectors"][0]["weight"] == pytest.approx(100.0)
+        totals = body["totals"]
+        assert totals["stress_change"] == pytest.approx(totals["value"] * totals["beta"] * -0.05)
+        assert client.post("/api/positions", json={"symbol": "MSFT", "shares": -1, "cost": 5}).status_code == 400
+        assert client.patch(f"/api/positions/{added['id']}", json={"shares": 12}).json()["shares"] == 12
+    finally:
+        client.delete(f"/api/positions/{added['id']}")
+    assert client.get("/api/portfolio").json()["rows"] == []
+
+
+def test_journal_trades_update_positions(client, store):
+    first = client.post("/api/journal", json={"symbol": "AAPL", "action": "buy", "shares": 10, "price": 100, "reason": "Breakout", "update_positions": True}).json()
+    second = client.post("/api/journal", json={"symbol": "AAPL", "action": "buy", "shares": 10, "price": 120, "reason": "Adding", "update_positions": True}).json()
+    try:
+        position = next(row for row in store.positions() if row["symbol"] == "AAPL")
+        assert position["shares"] == 20 and position["cost"] == pytest.approx(110)
+        assert first["entry"]["snapshot"]["stock"]["rsi"] is not None
+        assert client.post("/api/journal", json={"symbol": "AAPL", "action": "sell", "shares": 25, "price": 130, "reason": "Too many", "update_positions": True}).status_code == 400
+        sold = client.post("/api/journal", json={"symbol": "AAPL", "action": "sell", "shares": 20, "price": 130, "reason": "Target hit", "update_positions": True}).json()
+        assert not any(row["symbol"] == "AAPL" for row in store.positions())
+        assert client.post("/api/journal", json={"symbol": "AAPL", "action": "note", "reason": ""}).status_code == 400
+        rows = {row["id"]: row for row in client.get("/api/journal").json()["rows"]}
+        last = float(store.get_prices("AAPL")["Close"].iloc[-1])
+        assert rows[first["entry"]["id"]]["result"] == pytest.approx((last / 100 - 1) * 100)
+        assert rows[sold["entry"]["id"]]["result"] == pytest.approx(-(last / 130 - 1) * 100)
+    finally:
+        for entry in store.journal():
+            store.journal_delete(entry["id"])
+        for row in store.positions():
+            store.position_delete(row["id"])
+
+
+def test_lists_and_notes(client, store):
+    try:
+        assert client.post("/api/tags", json={"symbol": "NVDA", "tag": "  Semis  "}).json()["tags"] == ["Semis"]
+        client.post("/api/notes/NVDA", json={"text": "Wait for the 200-day."})
+        row = next(row for row in client.get("/api/watchlist").json()["rows"] if row["symbol"] == "NVDA")
+        assert row["tags"] == ["Semis"] and row["note"] == "Wait for the 200-day."
+        page = client.get("/api/stock/NVDA").json()
+        assert page["note"]["text"] == "Wait for the 200-day." and page["tags"] == ["Semis"]
+        assert client.post("/api/tags", json={"symbol": "NVDA", "tag": ""}).status_code == 400
+    finally:
+        store.tag_remove("NVDA", "Semis")
+        store.note_set("NVDA", "")
+
+
+def test_backup_round_trip(tmp_path, store):
+    from src.data import backup
+
+    store.tag_add("NVDA", "Core")
+    store.note_set("NVDA", "Long term")
+    position = store.position_add("NVDA", 5, 100.0)
+    try:
+        data = backup.export(store)
+    finally:
+        store.tag_remove("NVDA", "Core")
+        store.note_set("NVDA", "")
+        store.position_delete(position)
+    fresh = Store(tmp_path / "restored.db")
+    counts = backup.restore(fresh, data)
+    assert fresh.watchlist() == store.watchlist()
+    assert fresh.tags_by_symbol() == {"NVDA": ["Core"]}
+    assert fresh.note("NVDA")["text"] == "Long term"
+    assert counts["positions"] == 1
+    # Merging the same backup again adds nothing twice, also after a browser has rewritten
+    # whole numbers such as 165.0 as 165.
+    def like_a_browser(value):
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        if isinstance(value, dict):
+            return {key: like_a_browser(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [like_a_browser(item) for item in value]
+        return value
+
+    fresh.alert_add({"kind": "stock", "symbol": "NVDA", "metric": "close", "op": "above", "value": 165.0, "note": ""})
+    data = {**data, "alerts": [{"rule": {"kind": "stock", "symbol": "NVDA", "metric": "close", "op": "above", "value": 165.0, "note": ""}, "enabled": True}]}
+    again = backup.restore(fresh, like_a_browser(json.loads(json.dumps(data))))
+    assert again["positions"] == 0 and again["alerts"] == 0 and len(fresh.positions()) == 1
+    with pytest.raises(ValueError):
+        backup.restore(fresh, {"format": "something else"})
+    backup.restore(fresh, {**data, "positions": [], "watchlist": ["SPY"]}, replace=True)
+    assert fresh.positions() == [] and fresh.watchlist() == ["SPY"]
+
+
+# ------------------------------------------------------------------ stock checklist
+def test_checklist_flags_what_matters():
+    from src.analytics import checklist
+
+    snapshot = {"trend": {"label": "Downtrend", "tone": "critical"}, "vs_sma50": -8.0, "vs_sma200": -12.0, "rsi": 27.0, "rs_rating": 15.0,
+                "rvol": 3.0, "change_pct": -4.0, "atr": 5.0, "last": 100.0}
+    option = {"expected_move_week": 9.5, "expected_move_week_expiry": "2026-11-20", "net_gex": -1.0}
+    checks = checklist.build(snapshot, next_earnings="2026-11-17", option=option, short_pct=0.2, health=40.0,
+                             beat_odds={"prob": 0.9}, today=dt.date(2026, 11, 10))
+    states = {check["id"]: check["state"] for check in checks}
+    assert states == {"trend": "bad", "rsi": "warn", "rs": "bad", "volume": "bad", "earnings": "warn", "market": "bad",
+                      "gamma": "warn", "short": "warn", "risk": "info"}
+    earnings = next(check for check in checks if check["id"] == "earnings")
+    assert "±9.5%" in earnings["text"] and "90%" in earnings["text"]
+    assert checklist.summary(checks) == {"good": 0, "warn": 4, "bad": 4}
+    assert checklist.implied_move(option, "2026-11-21") == (None, None)
+
+
+# --------------------------------------------------------------- calendars and timeline
+def test_typical_earnings_move():
+    from src.analytics.events import typical_move
+
+    days = pd.bdate_range("2026-01-01", periods=60)
+    close = pd.Series(100.0, index=days)
+    close.loc[days[21]:] = 110.0  # +10% across the report on days[20]
+    close.loc[days[41]:] = 104.5  # -5% across the report on days[40]
+    frame = pd.DataFrame({"Close": close})
+    result = typical_move(frame, [{"date": days[40].strftime("%Y-%m-%d")}, {"date": days[20].strftime("%Y-%m-%d")}])
+    assert result["average"] == pytest.approx(7.5) and result["largest"] == pytest.approx(10.0) and result["reports"] == 2
+
+
+def test_economic_calendar_compares_expectations_with_results(tmp_path):
+    from src.analytics import events
+
+    db = Store(tmp_path / "calendar.db")
+    months = pd.date_range("2025-01-01", periods=22, freq="MS")
+    db.upsert_series("fred:CPIAUCSL", pd.Series([300 * 1.003 ** index for index in range(22)], index=months))
+    assert events.period_start("Q4 2026") == pd.Timestamp(2026, 10, 1)
+    assert events.period_start("October 2026") == pd.Timestamp(2026, 10, 1)
+    events.log_expectations(db, {"cpi_mom": {"period": months[-1].strftime("%B %Y"), "median": 0.2, "release": "2020-01-01"}})
+    past = events.economic_calendar(db)["past"]
+    assert past[0]["actual"] == pytest.approx(0.3) and past[0]["surprise"] == pytest.approx(0.1)
+    db.kv_set("events:macro", [{"date": "2099-12-10", "label": "CPI inflation report", "kind": "macro", "metric": "cpi_yoy"}])
+    db.kv_set("pm:board", {"cpi_mom": {"release": "2099-12-10", "period": "November 2099", "median": 0.3, "low": 0.2, "high": 0.4, "volume": 1.0}})
+    upcoming = events.economic_calendar(db, days=40000)["upcoming"]
+    assert upcoming[0]["time"] == "08:30"
+    assert upcoming[0]["expectations"][0]["previous"] == pytest.approx(0.3)
+
+
+def test_timeline_looks_back_with_publication_delays(client):
+    body = client.get("/api/timeline?date=2025-06-02").json()
+    assert body["available"] and body["date"] <= "2025-06-02"
+    assert len(body["pillars"]) == len(PILLARS)
+    assert {item["label"] for item in body["forward"]} == {"1 week", "1 month", "3 months", "6 months"}
+    assert client.get("/api/timeline?date=June").status_code == 400
+
+
+def test_notable_dates_find_falls():
+    from src.analytics.timeline import notable_dates
+
+    days = pd.bdate_range("2025-01-01", periods=30)
+    prices = pd.Series([100, 105, 110, 100, 95, 99, 112, 113] + [113] * 22, index=days, dtype=float)
+    found = notable_dates(prices, days[0])
+    assert found[0]["date"] == days[2].strftime("%Y-%m-%d") and "14%" in found[0]["label"]
+    assert found[1]["date"] == days[4].strftime("%Y-%m-%d")
+
+
+def test_brief_sums_up_the_day(client):
+    body = client.get("/api/brief").json()
+    assert body["title"] and isinstance(body["lines"], list)
+    assert any("Market Health" in line["text"] for line in body["lines"])
+
+
+def test_filings_summarise_insider_trades(client):
+    body = client.get("/api/stock/NVDA/filings").json()
+    assert body["filings"][0]["form"] == "8-K"
+    assert body["summary"]["buys"] == 1 and body["summary"]["sells"] == 1 and body["summary"]["buyers"] == 1
+
+
+def test_stale_readings_are_marked(store):
+    from src.analytics.signals import signal_row
+
+    ctx = Ctx(store)
+    fresh = signal_row(ctx, "vix")
+    assert fresh["stale"] is False and fresh["age"] == 0
+    old = signal_row(ctx, "hy_oas")
+    assert old["age"] >= 0 and old["stale"] == (old["age"] > 5 + 1)
+
+
+
+def test_fomc_parser_ignores_dates_with_a_year():
+    text = ("<h4>2027 FOMC Meetings</h4> January 26-27 March 16-17* October 26-27 December 7-8* * Meeting associated with a "
+            "Summary of Economic Projections. Note: A two-day meeting is scheduled for January 25-26, 2028. "
+            "Last Update: October 28, 2026")
+    days = [event["date"] for event in macro_sources.parse_fomc(text, dt.date(2026, 11, 1))]
+    assert days == ["2027-01-27", "2027-03-17", "2027-10-27", "2027-12-08"]
+
+
+def test_earnings_calendar_leaves_out_foreign_otc_shares():
+    from src.data.calendars import _rows
+
+    frame = pd.DataFrame({
+        "Company": ["NVIDIA", "KBC Group", "Lakefront"], "Marketcap": [4e12, 5e10, 2e9],
+        "Event Name": ["Q3", "Q3", "Q3"], "Timing": ["AMC", "BMO", "TNS"], "EPS Estimate": [2.47, 1.6, float("nan")],
+        "Event Start Date": [pd.Timestamp("2026-11-17 21:00", tz="UTC")] * 3,
+    }, index=["NVDA", "KBCSY", "GLPGF"])
+    rows = _rows(frame)
+    assert [row["symbol"] for row in rows] == ["NVDA"]
+    assert rows[0]["timing"] == "after" and rows[0]["date"] == "2026-11-17"

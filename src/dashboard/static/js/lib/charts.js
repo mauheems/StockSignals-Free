@@ -96,6 +96,7 @@ export function chartCard({ title, metric, subtitle, height = 230, foot }) {
   const subEl = h("p", { class: "card-sub" }, subtitle || "");
   subEl.hidden = !subtitle;
   const footEl = h("div", { class: "chart-foot" }, foot || "");
+  const ageEl = h("span", { class: "card-age" });
   footEl.hidden = !foot;
   let showingTable = false;
   let handle = null;
@@ -119,7 +120,7 @@ export function chartCard({ title, metric, subtitle, height = 230, foot }) {
     { class: "card chart-card", dataset: { chart: title } },
     h("div", { class: "card-head" },
       h("div", {}, h("h3", { class: "card-title" }, title, metric ? info(metric) : null), subEl),
-      h("div", { class: "card-actions" }, toggle)),
+      h("div", { class: "card-actions" }, ageEl, toggle)),
     canvas, tableBox, emptyBox, footEl,
   );
 
@@ -165,6 +166,7 @@ export function chartCard({ title, metric, subtitle, height = 230, foot }) {
       }
       emptyBox.hidden = true;
       table = result.table;
+      showAge(ageEl, result.asOf);
       canvas.hidden = false;
       if (!handle) handle = mount(canvas);
       handle.chart.setOption(result.option, true);
@@ -177,6 +179,43 @@ export function chartCard({ title, metric, subtitle, height = 230, foot }) {
       return handle ? handle.chart : null;
     },
   };
+}
+
+// How many weekdays old data may be before it counts as stale, by how often it is published.
+const AGE_LIMIT = { daily: 3, weekly: 9, monthly: 50, quarterly: 100 };
+
+/** Weekdays after a date, up to today. */
+export function weekdaysSince(iso) {
+  const day = new Date(`${iso.slice(0, 10)}T12:00:00`);
+  const today = new Date();
+  let count = 0;
+  for (const cursor = new Date(day); ; ) {
+    cursor.setDate(cursor.getDate() + 1);
+    if (cursor > today) break;
+    if (cursor.getDay() !== 0 && cursor.getDay() !== 6) count += 1;
+  }
+  return count;
+}
+
+function showAge(el, asOf) {
+  if (!asOf?.date) {
+    el.replaceChildren();
+    return;
+  }
+  const age = weekdaysSince(asOf.date);
+  const stale = age > (AGE_LIMIT[asOf.cadence] ?? AGE_LIMIT.daily);
+  el.classList.toggle("is-stale", stale);
+  el.title = stale
+    ? `The newest data point is from ${asOf.date}, older than this ${asOf.cadence} data usually is. Its source may be behind: see Data Sources.`
+    : `The newest data point is from ${asOf.date}.`;
+  el.replaceChildren(`${stale ? "Stale: " : "Data to "}${fmtDate(asOf.date)}`);
+}
+
+function lastDateOf(dates, seriesList) {
+  for (let index = dates.length - 1; index >= 0; index -= 1) {
+    if (seriesList.some((values) => values[index] !== null && values[index] !== undefined)) return String(dates[index]).slice(0, 10);
+  }
+  return null;
 }
 
 function hasData(values) {
@@ -249,7 +288,7 @@ function thresholdMarks(thresholds, c) {
  * Line chart on one axis. Series: {name, short, values, slot (palette index), muted, area, width}.
  * Returns {option, table} for chartCard.render.
  */
-export function lineChart({ dates, series, yFmt = "num2", thresholds, min, max, endLabels = true, emptyText }) {
+export function lineChart({ dates, series, yFmt = "num2", thresholds, min, max, endLabels = true, emptyText, cadence = "daily" }) {
   const live = series.filter((item) => hasData(item.values));
   if (!dates || !dates.length || !live.length) return { empty: emptyText || "No data yet. This fills in once its source has loaded." };
   const c = colors();
@@ -322,7 +361,7 @@ export function lineChart({ dates, series, yFmt = "num2", thresholds, min, max, 
     columns: [{ label: "Date" }, ...live.map((item) => ({ label: item.name, fmt: yFmt }))],
     rows: dates.map((date, index) => [date, ...live.map((item) => item.values[index])]).reverse(),
   };
-  return { option, table };
+  return { option, table, asOf: { date: lastDateOf(dates, live.map((item) => item.values)), cadence } };
 }
 
 /** Bars above and below zero in the diverging pair: blue up, red down. */

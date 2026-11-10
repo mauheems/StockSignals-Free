@@ -475,3 +475,51 @@ table.data tr.drop-after td { box-shadow: inset 0 -2px 0 var(--accent); }
 }
 .mover:hover { background: var(--surface-2); text-decoration: none; }
 .banner-warning { background: color-mix(in srgb, var(--warning) 18%, var(--surface)); border: 1px solid var(--warning); }
+
+/* Data age on charts and readings */
+.card-age { font-size: 11px; color: var(--muted); white-space: nowrap; margin-right: 6px; }
+.card-age.is-stale, .stale-mark { color: color-mix(in srgb, var(--warning) 75%, var(--ink)); font-weight: 600; }
+
+/* Overview: the brief */
+.brief { margin-bottom: 10px; }
+.brief-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.brief-line { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 6px; font-size: 13.5px; line-height: 1.45; }
+.brief-icon { font-size: 10px; line-height: 1.9; color: var(--muted); text-align: center; }
+.brief-line.tone-good .brief-icon { color: var(--good); }
+.brief-line.tone-bad .brief-icon { color: var(--critical); }
+.brief-more { margin-left: 6px; font-size: 12px; }
+
+/* Stock page: checklist, notes */
+.checklist { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.check { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 8px; }
+.check-icon { font-size: 11px; line-height: 1.7; text-align: center; color: var(--muted); }
+.check-good .check-icon { color: var(--good); }
+.check-warn .check-icon { color: var(--warning); }
+.check-bad .check-icon { color: var(--critical); }
+.check-label { font-weight: 600; font-size: 13px; display: inline-flex; align-items: center; gap: 4px; }
+.check-text { font-size: 12.5px; color: var(--ink-2); line-height: 1.45; }
+.stock-note { width: 100%; resize: vertical; min-height: 70px; font: inherit; line-height: 1.45; }
+.note-mark { color: var(--muted); font-size: 12px; cursor: help; }
+.row-actions { display: inline-flex; gap: 2px; white-space: nowrap; }
+
+/* Journal */
+.journal-reason { width: 100%; resize: vertical; min-height: 90px; font: inherit; line-height: 1.45; }
+.check-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); align-self: flex-end; padding-bottom: 6px; }
+.check-inline input { accent-color: var(--accent); margin: 0; }
+.journal-entry { padding-bottom: 10px; }
+.entry-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.entry-reason { margin: 6px 0; white-space: pre-wrap; line-height: 1.5; font-size: 13.5px; }
+.entry-outcome { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; margin-bottom: 4px; }
+.entry-details { margin-top: 6px; }
+.snapshot-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); gap: 0 18px; }
+
+/* Economic calendar */
+.cal-list { display: flex; flex-direction: column; }
+.cal-row { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--grid); }
+.cal-row:last-child { border-bottom: 0; }
+.cal-date { display: flex; flex-direction: column; font-size: 13px; }
+.cal-title { font-weight: 600; display: inline-flex; align-items: center; gap: 4px; margin-bottom: 2px; }
+.cal-expect { font-size: 13px; display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 2px; }
+
+/* Settings */
+.settings-card .field { margin-bottom: 4px; }

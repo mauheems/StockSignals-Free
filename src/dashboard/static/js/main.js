@@ -4,35 +4,47 @@ import { api, query } from "./lib/api.js";
 import { disposeCharts } from "./lib/charts.js";
 import { debounce, fmtAgo, h, replace } from "./lib/dom.js";
 import { setCatalog } from "./lib/guide.js";
+import * as notify from "./lib/notify.js";
 import { errorBox, loadingBox, toast } from "./lib/ui.js";
 
 import alerts from "./pages/alerts.js";
 import backtest from "./pages/backtest.js";
 import breadth from "./pages/breadth.js";
+import calendar from "./pages/calendar.js";
 import chart from "./pages/chart.js";
+import earnings from "./pages/earnings.js";
 import flows from "./pages/flows.js";
 import guide from "./pages/guide.js";
+import journal from "./pages/journal.js";
 import macro from "./pages/macro.js";
 import options from "./pages/options.js";
 import overview from "./pages/overview.js";
+import portfolio from "./pages/portfolio.js";
+import prediction from "./pages/prediction.js";
 import rotation from "./pages/rotation.js";
 import scanner from "./pages/scanner.js";
+import settings from "./pages/settings.js";
 import sources from "./pages/sources.js";
 import stock from "./pages/stock.js";
 import study from "./pages/study.js";
+import timeline from "./pages/timeline.js";
 import volatility from "./pages/volatility.js";
 import watchlist from "./pages/watchlist.js";
 
-const PAGES = { alerts, overview, breadth, rotation, volatility, options, flows, macro, watchlist, scanner, chart, stock, backtest, study, guide, sources };
+const PAGES = {
+  alerts, overview, breadth, rotation, volatility, options, flows, macro, prediction, earnings, calendar,
+  watchlist, portfolio, journal, scanner, chart, stock, backtest, study, timeline, guide, sources, settings,
+};
 
 const NAV = [
   { label: "Market", items: [
     ["overview", "Overview"], ["breadth", "Trend & Breadth"], ["rotation", "Rotation"], ["volatility", "Volatility"],
-    ["options", "Options & Gamma"], ["flows", "Flows & Sentiment"], ["macro", "Macro & Credit"],
+    ["options", "Options & Gamma"], ["flows", "Flows & Sentiment"], ["macro", "Macro & Credit"], ["prediction", "Prediction Markets"],
   ] },
-  { label: "Stocks", items: [["watchlist", "Watchlist"], ["alerts", "Alerts"], ["scanner", "S&P 500 Scanner"], ["chart", "Chart Lab"]] },
-  { label: "Research", items: [["backtest", "Backtests"], ["study", "Signal Study"]] },
-  { label: "Reference", items: [["guide", "Metric Guide"], ["sources", "Data Sources"]] },
+  { label: "Calendar", items: [["earnings", "Earnings Season"], ["calendar", "Economic Calendar"]] },
+  { label: "Stocks", items: [["watchlist", "Watchlist"], ["portfolio", "Portfolio"], ["journal", "Journal"], ["alerts", "Alerts"], ["scanner", "S&P 500 Scanner"], ["chart", "Chart Lab"]] },
+  { label: "Research", items: [["backtest", "Backtests"], ["study", "Signal Study"], ["timeline", "Timeline"]] },
+  { label: "Reference", items: [["guide", "Metric Guide"], ["sources", "Data Sources"], ["settings", "Settings"]] },
 ];
 
 let currentPage = null;
@@ -132,6 +144,7 @@ function applyStatus(status) {
   lastVersion = status.version;
   restartEl.hidden = !status.code_changed;
   showUnread(status.alerts_unread || 0);
+  notify.check(status.alerts_unread || 0);
   document.dispatchEvent(new CustomEvent("status", { detail: status }));
 }
 
@@ -232,15 +245,17 @@ function buildTheme() {
     const dark = document.documentElement.dataset.theme === "dark";
     button.textContent = dark ? "Light mode" : "Dark mode";
   };
-  label();
-  button.addEventListener("click", () => {
-    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  const apply = (next) => {
     document.documentElement.dataset.theme = next;
     localStorage.setItem("ms.theme", next);
     label();
     // Charts draw on canvas with resolved colours, so they are redrawn in the new theme.
     route();
-  });
+  };
+  label();
+  button.addEventListener("click", () => apply(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
+  // The Settings page changes the theme through the same path.
+  document.addEventListener("set-theme", (event) => apply(event.detail));
   return button;
 }
 

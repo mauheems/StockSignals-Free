@@ -3,6 +3,7 @@ import { DEFAULT_MEASURE, alertForm, alertsChanged, savedDraft, signalRule, stoc
 import { api } from "../lib/api.js";
 import { MISSING, fmt, fmtDate, h, replace } from "../lib/dom.js";
 import { info } from "../lib/guide.js";
+import * as notify from "../lib/notify.js";
 import { dataTable, emptyBox, pageHead, statusBadge, toast } from "../lib/ui.js";
 
 export { alertsChanged };
@@ -62,6 +63,8 @@ export default {
         h("div", { class: "card-head" },
           h("h3", { class: "card-title" }, "Notifications", info("alerts"), data.unread ? h("span", { class: "sub-text", style: { fontWeight: 400 } }, ` · ${data.unread} new`) : null),
           h("div", { class: "card-actions" },
+            h("a", { class: "btn btn-ghost btn-xs", href: "#/settings", title: "Pop-up notifications on this computer when an alert fires" },
+              notify.enabled() ? "Desktop notifications: on" : "Get desktop notifications"),
             h("button", {
               class: "btn btn-xs",
               type: "button",

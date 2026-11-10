@@ -82,8 +82,8 @@ export function fmt(value, code = "num2") {
     case "spct0": return signed(value, `${number(value, 0)}%`);
     case "spct1": return signed(value, `${number(value, 1)}%`);
     case "spct2": return signed(value, `${number(value, 2)}%`);
-    case "usd0": return `$${number(value, 0)}`;
-    case "usd2": return `$${number(value, 2)}`;
+    case "usd0": return `${value < 0 ? "-" : ""}$${number(Math.abs(value), 0)}`;
+    case "usd2": return `${value < 0 ? "-" : ""}$${number(Math.abs(value), 2)}`;
     case "usdbn": return `${value < 0 ? "-" : ""}$${number(Math.abs(value), 2)}B`;
     case "usdtn": return `$${number(value, 2)}T`;
     case "compact": return compact(value);

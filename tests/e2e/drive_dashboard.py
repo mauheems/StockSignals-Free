@@ -16,6 +16,7 @@ The watchlist is changed during the run and restored afterwards.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import os
 import re
 import sys
@@ -26,15 +27,16 @@ from playwright.sync_api import Page, sync_playwright
 BASE = os.environ.get("DASHBOARD_URL", "http://localhost:8765")
 SHOTS = os.environ.get("DASHBOARD_SHOTS")
 PAGES = [
-    "overview", "breadth", "rotation", "volatility", "options", "flows", "macro",
+    "overview", "breadth", "rotation", "volatility", "options", "flows", "macro", "prediction", "earnings", "calendar",
+    "portfolio", "journal", "timeline", "settings",
     "watchlist", "alerts", "scanner", "chart", "backtest", "study", "guide", "sources",
 ]
 ROUTES = set(PAGES) | {"stock"}
 BAD_TEXT = re.compile(r"\b(undefined|NaN|null|\[object Object\]|Infinity)\b")
 LONG_DECIMAL = re.compile(r"\d\.\d{7,}")
 # Buttons that change saved state are exercised by their own scenarios, not the sweep.
-EXTERNAL_SOURCES = ("https://kalshi.com/", "https://polymarket.com/")
-SKIP_SELECTOR = "[data-remove], [data-watch], [data-danger], #watch-toggle, #refresh-all, #theme-toggle, #create-alert, #drawer-create-alert, #stock-add-alert, #edit-signals, .row-handle, [data-keep-order], [data-source], .search-item"
+EXTERNAL_SOURCES = ("https://kalshi.com/", "https://polymarket.com/", "https://finance.yahoo.com/")
+SKIP_SELECTOR = "[data-remove], [data-watch], [data-danger], #watch-toggle, #refresh-all, #theme-toggle, #create-alert, #drawer-create-alert, #stock-add-alert, #edit-signals, .row-handle, [data-keep-order], [data-source], #notify-toggle, #backup-download, .journal-entry .card-actions button, .search-item"
 
 
 class Run:
@@ -345,6 +347,7 @@ def scenario_key_signals(run: Run) -> None:
         if rows()[:2] != [start[2], start[1]]:
             run.problem(f"moving down gave {rows()[:2]}")
         # Drag the fourth row to the top (both on screen: a simulated drag doesn't scroll).
+        page.evaluate("() => document.querySelector('.edit-list').scrollIntoView({ block: 'center' })")
         dragged = rows()[3]
         page.locator(".edit-row").nth(3).drag_to(page.locator(".edit-row").first, target_position={"x": 40, "y": 3})
         run.idle()
@@ -667,6 +670,10 @@ def scenario_chart(run: Run) -> None:
     if SHOTS:
         page.screenshot(path=f"{SHOTS}/chart_line.png", full_page=True)
     run.click(page.locator("[aria-label='Price style'] button:has-text('Candles')"), "price as candles")
+    for label in ("Vs previous close", "Like the candle"):
+        button = page.locator(f"[aria-label='Volume bar colour'] button:has-text('{label}')")
+        if "is-active" not in (button.get_attribute("class") or ""):
+            run.click(button, f"volume colour {label}")
     # Signals: add several, including one that can go negative, and a comparison ticker.
     signal_select = page.locator("select[aria-label='Add a signal']")
     for value in ("vix", "pct_above_50", "mcclellan", "dix", "pc_equity_10d"):
@@ -1067,22 +1074,35 @@ def scenario_extended(run: Run) -> None:
 def scenario_prediction(run: Run) -> None:
     """Prediction market odds on the Macro page, the Overview and stock pages."""
     page = run.page
-    run.visit("macro")
+    run.visit("prediction")
     try:
         page.wait_for_selector("#content .odds-row", timeout=60000)
     except Exception:
-        run.problem("the Macro page shows no Fed decision odds")
+        run.problem("the Prediction Markets page shows no Fed decision odds")
         return
     rows = page.locator("#content .odds-row")
     total = sum(int(rows.nth(index).locator(".odds-value").inner_text().rstrip("%")) for index in range(rows.count()))
     if not 97 <= total <= 103:
         run.problem(f"Fed decision odds add up to {total}%")
-    run.check_page("macro with prediction markets")
+    run.check_page("prediction markets")
+    # Every number's outcome chart, through the picker.
+    for button in page.locator("[aria-label='Number to show'] button").all():
+        if "is-active" not in (button.get_attribute("class") or ""):
+            run.click(button, f"odds for {button.inner_text()}")
+            run.check_page(f"odds for {button.inner_text()}")
+    # The page sweep may have left the filter on either choice; switch to the other one first.
+    for label in ("Your watchlist", "All companies"):
+        button = page.locator(f"[aria-label='Which companies'] button:has-text('{label}')")
+        if "is-active" not in (button.get_attribute("class") or ""):
+            run.click(button, f"earnings for {label.lower()}")
     if SHOTS:
-        page.locator("#content").screenshot(path=f"{SHOTS}/prediction_macro.png")
-    board = json.loads(page.evaluate("() => fetch('/api/macro').then((r) => r.text())"))["prediction"]["board"]
-    if "fed" not in board:
-        run.problem("no Fed odds in the macro data")
+        page.locator("#content").screenshot(path=f"{SHOTS}/prediction_page.png")
+    body = json.loads(page.evaluate("() => fetch('/api/prediction').then((r) => r.text())"))
+    if not body["fed"]:
+        run.problem("no Fed odds in the prediction data")
+    run.visit("macro")
+    if not page.locator("#content a[href='#/prediction']").count():
+        run.problem("Macro & Credit does not point to Prediction Markets")
     run.visit("overview")
     catalysts = json.loads(page.evaluate("() => fetch('/api/overview').then((r) => r.text())"))["catalysts"]
     if any(event.get("odds") for event in catalysts):
@@ -1091,6 +1111,233 @@ def scenario_prediction(run: Run) -> None:
             run.click(more.first, "show all catalysts")
         if page.locator("#content .odds-note").count() == 0:
             run.problem("Next catalysts show no prediction market odds")
+
+
+def api_json(page: Page, path: str):
+    return json.loads(page.evaluate(f"() => fetch('{path}').then((r) => r.text())"))
+
+
+def scenario_brief(run: Run) -> None:
+    """The Overview's brief, the stock checklist and data-age labels."""
+    page = run.page
+    run.visit("overview")
+    page.wait_for_selector("#brief .brief-line", timeout=60000)
+    if page.locator("#brief .brief-line").count() < 2:
+        run.problem("the brief has fewer than two lines")
+    if not page.locator("#content .card-age").filter(has_text=re.compile("Data to|Stale")).count():
+        run.problem("no chart shows how recent its data is")
+    if SHOTS:
+        page.locator("#brief").screenshot(path=f"{SHOTS}/brief.png")
+    run.visit("stock/NVDA")
+    page.wait_for_selector("#checklist .check", timeout=60000)
+    run.check_page("stock checklist")
+    page.wait_for_selector("text=Insider trades", timeout=60000)
+    if SHOTS:
+        page.screenshot(path=f"{SHOTS}/stock_new.png", full_page=True)
+
+
+def scenario_portfolio(run: Run) -> None:
+    """Add, edit, alert on and remove a position. Leaves your own positions untouched."""
+    page = run.page
+    before = {row["id"] for row in api_json(page, "/api/portfolio")["rows"]}
+    created = []
+    try:
+        run.visit("portfolio")
+        page.locator("#position-symbol").fill("QQQ")
+        page.locator("#position-shares").fill("2")
+        page.locator("#position-cost").fill("100")
+        page.locator("#position-stop").fill("90")
+        page.locator("#position-note").fill("browser test position")
+        run.click("#position-save", "add a position")
+        page.wait_for_selector(".toast:has-text('Added')", timeout=60000)
+        run.settle()
+        created = [row["id"] for row in api_json(page, "/api/portfolio")["rows"] if row["id"] not in before]
+        if len(created) != 1:
+            run.problem(f"expected one new position, found {len(created)}")
+            return
+        position = created[0]
+        run.check_page("with a position")
+        run.click(page.locator(f"[data-edit='{position}']"), "edit the position")
+        page.locator("#position-shares").fill("3")
+        run.click("#position-save", "save the edit")
+        run.settle()
+        row = next(row for row in api_json(page, "/api/portfolio")["rows"] if row["id"] == position)
+        if row["shares"] != 3:
+            run.problem("editing the position did not save")
+        run.click(page.locator(f"tr:has([data-position='{position}']) button:has-text('Stop alert')"), "stop alert")
+        page.wait_for_function("() => document.querySelector('#drawer-alert-value')?.value === '90'", timeout=30000)
+        run.click("#close-alert-drawer", "close the drawer")
+        if SHOTS:
+            page.screenshot(path=f"{SHOTS}/portfolio.png", full_page=True)
+        page.once("dialog", lambda dialog: dialog.accept())
+        run.click(page.locator(f"[data-position='{position}']"), "remove the position")
+        run.settle()
+    finally:
+        for position in [row["id"] for row in api_json(page, "/api/portfolio")["rows"] if row["id"] not in before]:
+            page.evaluate(f"() => fetch('/api/positions/{position}', {{ method: 'DELETE' }})")
+    if {row["id"] for row in api_json(page, "/api/portfolio")["rows"]} != before:
+        run.problem("positions were not restored after the test")
+
+
+def scenario_journal(run: Run) -> None:
+    """Write a note entry, look at its signals, delete it. Leaves your journal untouched."""
+    page = run.page
+    before = {row["id"] for row in api_json(page, "/api/journal")["rows"]}
+    try:
+        run.visit("journal/new/SPY")
+        if page.locator("#journal-symbol").input_value() != "SPY":
+            run.problem("the journal did not start from the stock in the address")
+        run.click(page.locator("[aria-label='What you did'] button:has-text('Just a note')"), "a note entry")
+        run.click("#journal-save", "save without a reason")
+        page.wait_for_selector(".toast.error", timeout=15000)
+        page.locator("#journal-reason").fill("Browser test entry: watching SPY at its 50-day.")
+        run.click("#journal-save", "save the entry")
+        page.wait_for_selector(".toast:has-text('Saved')", timeout=60000)
+        run.settle()
+        created = [row for row in api_json(page, "/api/journal")["rows"] if row["id"] not in before]
+        if len(created) != 1 or not created[0]["snapshot"]:
+            run.problem("the entry was not saved with a signal snapshot")
+            return
+        card = page.locator(f"[data-entry='{created[0]['id']}']")
+        run.click(card.locator("button:has-text('What the signals said then')"), "show the signals")
+        run.check_page("journal entry")
+        if SHOTS:
+            page.screenshot(path=f"{SHOTS}/journal.png", full_page=True)
+        page.once("dialog", lambda dialog: dialog.accept())
+        run.click(card.locator("button:has-text('Delete')"), "delete the entry")
+        run.settle()
+    finally:
+        for entry in [row["id"] for row in api_json(page, "/api/journal")["rows"] if row["id"] not in before]:
+            page.evaluate(f"() => fetch('/api/journal/{entry}', {{ method: 'DELETE' }})")
+    if {row["id"] for row in api_json(page, "/api/journal")["rows"]} != before:
+        run.problem("the journal was not restored after the test")
+
+
+def scenario_lists(run: Run) -> None:
+    """Put a stock in a list, filter the watchlist by it, write a note. Restores both."""
+    page = run.page
+    tag = "Browser test list"
+    original = api_json(page, "/api/stock/NVDA")["note"]
+    try:
+        run.visit("stock/NVDA")
+        page.locator("#tag-input").fill(tag)
+        run.click(page.locator("form:has(#tag-input) button[type=submit]"), "add to a list")
+        page.wait_for_selector(f".chip:has-text('{tag}')", timeout=15000)
+        page.locator("#stock-note").fill("Browser test note")
+        page.wait_for_selector("text=Saved", timeout=15000)
+        run.visit("watchlist")
+        page.wait_for_selector(f"[aria-label='Show list'] button:has-text('{tag}')", timeout=30000)
+        run.click(page.locator(f"[aria-label='Show list'] button:has-text('{tag}')"), "show the test list")
+        rows = page.locator("#content tbody tr").count()
+        if rows != 1:
+            run.problem(f"the list filter shows {rows} stocks instead of 1")
+        if not page.locator("#content .note-mark").count():
+            run.problem("the watchlist doesn't mark the stock's note")
+        run.click(page.locator("[aria-label='Show list'] button:has-text('All')"), "show all again")
+    finally:
+        page.evaluate(f"() => fetch('/api/tags/remove', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({{ symbol: 'NVDA', tag: '{tag}' }}) }})")
+        text = (original or {}).get("text", "")
+        page.evaluate("(text) => fetch('/api/notes/NVDA', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) })", text)
+        page.wait_for_timeout(300)
+    after = api_json(page, "/api/stock/NVDA")
+    if tag in after["tags"] or (after["note"] or {}).get("text", "") != (original or {}).get("text", ""):
+        run.problem("NVDA's lists or note were not restored after the test")
+
+
+def scenario_calendars(run: Run) -> None:
+    """Earnings Season and the Economic Calendar: every filter."""
+    page = run.page
+    run.visit("earnings")
+    page.wait_for_selector("#content table.data, #content .empty", timeout=60000)
+    for group, labels in (("Which companies", ("S&P 500", "All over $2B", "Your stocks")), ("Period", ("Next 4 weeks", "Next 7 days", "Next 14 days"))):
+        for label in labels:
+            button = page.locator(f"[aria-label='{group}'] button:has-text('{label}')")
+            if "is-active" not in (button.get_attribute("class") or ""):
+                run.click(button, f"{group}: {label}")
+                run.check_page(f"earnings {label}")
+    run.click(page.locator("[aria-label='Which companies'] button:has-text('All over $2B')"), "all companies")
+    page.locator("input[aria-label='Filter companies']").fill("NV")
+    page.wait_for_timeout(200)
+    if SHOTS:
+        page.screenshot(path=f"{SHOTS}/earnings.png", full_page=True)
+    page.locator("input[aria-label='Filter companies']").fill("")
+    run.click(page.locator("[aria-label='Which companies'] button:has-text('Your stocks')"), "back to your stocks")
+    run.visit("calendar")
+    page.wait_for_selector("#content .cal-row, #content .empty", timeout=60000)
+    for label in ("With option expirations", "Releases only"):
+        button = page.locator(f"[aria-label='Show option expirations'] button:has-text('{label}')")
+        if "is-active" not in (button.get_attribute("class") or ""):
+            run.click(button, label)
+    run.check_page("economic calendar")
+    if SHOTS:
+        page.screenshot(path=f"{SHOTS}/calendar.png", full_page=True)
+
+
+def scenario_timeline(run: Run) -> None:
+    page = run.page
+    run.visit("timeline")
+    page.wait_for_selector("#timeline-date", timeout=60000)
+    run.idle()
+    for label in ("1 year ago", "3 months ago", "1 week ago"):
+        run.click(page.locator(f"[aria-label='Quick picks'] button:has-text('{label}')"), label)
+        run.idle()
+        run.check_page(f"timeline {label}")
+    options = page.locator("#timeline-notable option")
+    if options.count() > 1:
+        page.locator("#timeline-notable").select_option(index=1)
+        run.idle()
+        run.check_page("notable date")
+    page.locator("#timeline-date").fill("2025-04-08")
+    page.locator("#timeline-date").dispatch_event("change")
+    run.idle()
+    if page.locator("#timeline-date").input_value() != "2025-04-08":
+        run.problem("typing a date did not move the timeline")
+    if SHOTS:
+        page.screenshot(path=f"{SHOTS}/timeline.png", full_page=True)
+
+
+def scenario_settings(run: Run) -> None:
+    """Notifications, backup download and a no-op restore of that backup."""
+    page = run.page
+    page.context.grant_permissions(["notifications"], origin=BASE)
+    was_on = page.evaluate("() => localStorage.getItem('ms.notify.enabled')")
+    run.visit("settings")
+    run.click("#notify-toggle", "turn notifications on")
+    page.wait_for_selector("#notify-test:not([disabled])", timeout=15000)
+    run.click("#notify-test", "test notification")
+    run.click("#notify-toggle", "turn notifications off")
+    if was_on is not None:
+        page.evaluate("(value) => localStorage.setItem('ms.notify.enabled', value)", was_on)
+    with page.expect_download() as download:
+        page.locator("#backup-download").click()
+    path = download.value.path()
+    data = json.loads(Path(path).read_text())
+    if data.get("format") != "market-signals-backup":
+        run.problem("the backup file has the wrong format")
+    before = api_json(page, "/api/backup")
+    alerts_before = {alert["id"] for alert in api_json(page, "/api/alerts")["alerts"]}
+    positions_before = {row["id"] for row in api_json(page, "/api/portfolio")["rows"]}
+    journal_before = {row["id"] for row in api_json(page, "/api/journal")["rows"]}
+    try:
+        page.locator("#backup-file").set_input_files(path)
+        run.click("#backup-restore", "restore the same backup (adds nothing)")
+        page.wait_for_selector(".toast:has-text('Restored')", timeout=30000)
+        after = api_json(page, "/api/backup")
+        for key in ("watchlist", "alerts", "positions", "journal", "tags", "notes"):
+            if before[key] != after[key]:
+                run.problem(f"restoring the same backup changed {key}")
+    finally:
+        # Safety net: anything a faulty restore added to your own data is removed again.
+        for alert in api_json(page, "/api/alerts")["alerts"]:
+            if alert["id"] not in alerts_before:
+                page.evaluate(f"() => fetch('/api/alerts/{alert['id']}', {{ method: 'DELETE' }})")
+        for row in api_json(page, "/api/portfolio")["rows"]:
+            if row["id"] not in positions_before:
+                page.evaluate(f"() => fetch('/api/positions/{row['id']}', {{ method: 'DELETE' }})")
+        for row in api_json(page, "/api/journal")["rows"]:
+            if row["id"] not in journal_before:
+                page.evaluate(f"() => fetch('/api/journal/{row['id']}', {{ method: 'DELETE' }})")
+    run.check_page("settings")
 
 
 def scenario_sources(run: Run) -> None:
@@ -1140,7 +1387,9 @@ def main() -> int:
         scenarios = [
             scenario_shell, scenario_overview, scenario_key_signals, scenario_rotation, scenario_options, scenario_watchlist,
             scenario_ordering, scenario_scanner, scenario_stock, scenario_chart, scenario_backtest, scenario_study,
-            scenario_guide, scenario_alerts, scenario_drawer, scenario_extended, scenario_prediction, scenario_sources,
+            scenario_guide, scenario_alerts, scenario_drawer, scenario_extended, scenario_prediction,
+            scenario_brief, scenario_portfolio, scenario_journal, scenario_lists, scenario_calendars, scenario_timeline,
+            scenario_settings, scenario_sources,
         ]
         for scenario in scenarios:
             name = scenario.__name__.removeprefix("scenario_")

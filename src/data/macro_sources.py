@@ -33,6 +33,7 @@ FRED_SERIES = [
     "INDPRO", "UMCSENT",
     "DFII10", "T10YIE", "DFF",
     "USREC",
+    "A191RL1Q225SBEA",  # real GDP growth, annualized, for the economic calendar
 ]
 
 
@@ -369,7 +370,9 @@ def parse_fomc(text: str, today: dt.date) -> list[dict]:
     for index in range(1, len(sections) - 1, 2):
         year = int(sections[index])
         body = sections[index + 1]
-        for match in re.finditer(rf"(?<!Released )({_MONTHS})(?:/({_MONTHS}))? (\d{{1,2}})(?:-(\d{{1,2}}))?(\*)?(?!,? \d{{4}})", body):
+        # The day (or range) must be taken whole: otherwise "January 25-26, 2028" and "October 28, 2026"
+        # could still match as "January 25-2" and "October 2" and slip past the year check.
+        for match in re.finditer(rf"(?<!Released )({_MONTHS})(?:/({_MONTHS}))? (\d{{1,2}})(?:-(\d{{1,2}}))?(?![\d-])(\*)?(?!,? \d{{4}})", body):
             first_month, second_month, first_day, last_day, projections = match.groups()
             month_name = second_month or first_month
             try:
